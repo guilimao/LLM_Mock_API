@@ -1,0 +1,56 @@
+# Go 编译生成的二进制文件
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+llm-mock-api
+
+# 测试二进制文件
+*.test
+
+# 覆盖率报告
+*.out
+coverage.html
+
+# Go 工作区文件
+go.work
+go.work.sum
+
+# 依赖目录（Go Modules 通常不需要提交vendor目录）
+vendor/
+
+# IDE 配置文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 环境配置文件
+.env
+.env.local
+.env.*.local
+
+# 日志文件
+*.log
+logs/
+!logs/.gitkeep
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# 构建输出目录
+bin/
+dist/
+build/
+
+# 本地调试配置
+launch.json
+settings.json
+
+# 系统文件
+Thumbs.db
