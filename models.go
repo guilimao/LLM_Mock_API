@@ -51,6 +51,7 @@ type ChatMessage struct {
 }
 
 type ChatReasoningConfig struct {
+	Enabled  *bool       `json:"enabled,omitempty"`
 	Effort   string      `json:"effort,omitempty"`
 	Summary  interface{} `json:"summary,omitempty"`
 }

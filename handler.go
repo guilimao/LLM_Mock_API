@@ -109,8 +109,16 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 }
 
 // isReasoningEnabled checks if reasoning is enabled in the request
+// Priority: 1. Check if Enabled field is explicitly set to true
+//           2. Fall back to checking if effort is not "none"
 func (h *Handler) isReasoningEnabled(req ChatRequest) bool {
 	if req.Reasoning != nil {
+		// Priority 1: Check Enabled field if it's explicitly set
+		if req.Reasoning.Enabled != nil {
+			return *req.Reasoning.Enabled
+		}
+		
+		// Priority 2: Fall back to effort check
 		// Reasoning is enabled if effort is not "none" or empty
 		effort := strings.ToLower(req.Reasoning.Effort)
 		if effort != "none" && effort != "" {
