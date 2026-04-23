@@ -104,19 +104,96 @@ curl -X POST http://localhost:8080/api/v1/chat/completions \
 #CHAIN: content{fault=delay,fault_duration=2s}
 ```
 
-## 思考模式
+## 思考模式 (Reasoning)
 
-启用思考模式：
+支持 OpenRouter 最佳实践的推理配置，兼容 OpenAI 和 Anthropic 两种风格：
+
+### 配置选项
+
+| 参数 | 类型 | 说明 | 示例 |
+|------|------|------|------|
+| `enabled` | boolean | 显式启用/禁用推理 | `true` |
+| `effort` | string | OpenAI风格: xhigh/high/medium/low/minimal/none | `"high"` |
+| `max_tokens` | integer | Anthropic风格: 推理token限制 | `2000` |
+| `exclude` | boolean | 从响应中排除推理内容(仅统计) | `false` |
+
+**注意**: `effort` 和 `max_tokens` 不能同时使用，只能二选一。
+
+### 示例 1: OpenAI 风格 (effort)
 
 ```json
 {
-  "messages": [{"role": "user", "content": "Hello"}],
-  "reasoning": {"effort": "medium"},
+  "messages": [{"role": "user", "content": "Explain quantum computing"}],
+  "reasoning": {
+    "effort": "high"
+  },
   "stream": true
 }
 ```
 
-当`reasoning.effort`不为`none`时，服务端会返回`reasoning`字段。
+### 示例 2: Anthropic 风格 (max_tokens)
+
+```json
+{
+  "messages": [{"role": "user", "content": "Explain quantum computing"}],
+  "reasoning": {
+    "max_tokens": 2000
+  },
+  "stream": true
+}
+```
+
+### 示例 3: 排除推理内容 (仅统计)
+
+当 `exclude: true` 时，推理 tokens 仍会生成并计入 usage，但不会出现在响应内容中：
+
+```json
+{
+  "messages": [{"role": "user", "content": "Complex problem"}],
+  "reasoning": {
+    "effort": "high",
+    "exclude": true
+  },
+  "stream": false
+}
+```
+
+响应示例：
+```json
+{
+  "choices": [{
+    "message": {
+      "content": "The answer is 42.",
+      "reasoning": ""  // 推理内容被排除
+    }
+  }],
+  "usage": {
+    "completion_tokens": 150,
+    "completion_tokens_details": {
+      "reasoning_tokens": 100  // 但统计中仍包含推理tokens
+    }
+  }
+}
+```
+
+### 示例 4: 显式启用/禁用
+
+```json
+{
+  "reasoning": {
+    "enabled": true,
+    "effort": "medium"
+  }
+}
+```
+
+```json
+{
+  "reasoning": {
+    "enabled": false
+  }
+}
+```
 
 ## 工具调用
 
@@ -303,6 +380,38 @@ curl -X POST http://localhost:8080/api/v1/chat/completions \
       "role": "user",
       "content": "Hello"
     }],
+    "stream": true
+  }'
+```
+
+### 9. OpenRouter 风格推理配置 (exclude)
+
+```bash
+# 推理内容被生成但不包含在响应中（仅用于统计）
+curl -X POST http://localhost:8080/api/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{"role": "user", "content": "Explain quantum computing"}],
+    "reasoning": {
+      "effort": "high",
+      "exclude": true
+    },
+    "stream": true
+  }'
+```
+
+### 10. Anthropic 风格推理配置 (max_tokens)
+
+```bash
+# 使用 max_tokens 而不是 effort (Anthropic风格)
+curl -X POST http://localhost:8080/api/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{"role": "user", "content": "Analyze this complex problem"}],
+    "reasoning": {
+      "max_tokens": 2000,
+      "exclude": false
+    },
     "stream": true
   }'
 ```

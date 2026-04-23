@@ -51,9 +51,11 @@ type ChatMessage struct {
 }
 
 type ChatReasoningConfig struct {
-	Enabled  *bool       `json:"enabled,omitempty"`
-	Effort   string      `json:"effort,omitempty"`
-	Summary  interface{} `json:"summary,omitempty"`
+	Enabled   *bool       `json:"enabled,omitempty"`
+	Effort    string      `json:"effort,omitempty"`
+	MaxTokens *int        `json:"max_tokens,omitempty"`
+	Exclude   *bool       `json:"exclude,omitempty"`
+	Summary   interface{} `json:"summary,omitempty"`
 }
 
 type ChatStreamOptions struct {

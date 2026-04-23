@@ -35,15 +35,15 @@ func (h *Handler) RegisterRoutes(router *gin.Engine) {
 		api.POST("/chat/completions", h.ChatCompletions)
 		api.GET("/models", h.ListModels)
 	}
-	
+
 	// Test tool routes
 	router.GET("/test-tools", h.ListTestTools)
 	router.GET("/test-tools/:name", h.GetTestTool)
 	router.POST("/test-tools/:name/invoke", h.InvokeTestTool)
-	
+
 	// Health check
 	router.GET("/health", h.HealthCheck)
-	
+
 	// Fault preset routes
 	router.GET("/fault-presets", h.ListFaultPresets)
 }
@@ -65,19 +65,21 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		})
 		return
 	}
-	
 	// Determine if reasoning is enabled
 	reasoningEnabled := h.isReasoningEnabled(req)
-	
+
+	// Determine if reasoning should be excluded from response
+	reasoningExcluded := h.isReasoningExcluded(req)
+
 	// Determine model
 	model := req.Model
 	if model == "" {
 		model = "mock/llm-model"
 	}
 	h.streamHandler.modelName = model
-	
+
 	// Extract chain from system prompt
-	chain, err := h.extractChainFromMessages(req.Messages, reasoningEnabled)
+	chain, err := h.extractChainFromMessages(req.Messages, reasoningEnabled, reasoningExcluded)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: struct {
@@ -92,49 +94,77 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		})
 		return
 	}
-	
 	// Handle streaming vs non-streaming
 	if req.Stream {
 		// Streaming response
-		err := h.streamHandler.GenerateStream(c, req, chain, reasoningEnabled)
+		err := h.streamHandler.GenerateStream(c, req, chain, reasoningEnabled, reasoningExcluded)
 		if err != nil {
 			// If streaming failed mid-way, we can't send JSON error
 			fmt.Printf("Streaming error: %v\n", err)
 		}
 	} else {
 		// Non-streaming response
-		response := h.streamHandler.GenerateNonStream(req, chain, reasoningEnabled)
+		response := h.streamHandler.GenerateNonStream(req, chain, reasoningEnabled, reasoningExcluded)
 		c.JSON(http.StatusOK, response)
 	}
 }
 
 // isReasoningEnabled checks if reasoning is enabled in the request
-// Priority: 1. Check if Enabled field is explicitly set to true
-//           2. Fall back to checking if effort is not "none"
+// Priority: 1. Check if Enabled field is explicitly set
+//  2. Check if max_tokens is specified (Anthropic-style)
+//  3. Fall back to checking if effort is not "none"
 func (h *Handler) isReasoningEnabled(req ChatRequest) bool {
 	if req.Reasoning != nil {
 		// Priority 1: Check Enabled field if it's explicitly set
 		if req.Reasoning.Enabled != nil {
 			return *req.Reasoning.Enabled
 		}
-		
-		// Priority 2: Fall back to effort check
-		// Reasoning is enabled if effort is not "none" or empty
-		effort := strings.ToLower(req.Reasoning.Effort)
-		if effort != "none" && effort != "" {
+
+		// Priority 2: Check if max_tokens is specified (Anthropic-style reasoning)
+		if req.Reasoning.MaxTokens != nil && *req.Reasoning.MaxTokens > 0 {
 			return true
 		}
+
+		// Priority 3: Fall back to effort check
+		// Reasoning is enabled if effort is not "none" or empty
+		effort := strings.ToLower(req.Reasoning.Effort)
+		result := effort != "none" && effort != ""
+		return result
 	}
 	return false
 }
 
+// isReasoningExcluded checks if reasoning tokens should be excluded from response
+func (h *Handler) isReasoningExcluded(req ChatRequest) bool {
+	if req.Reasoning != nil && req.Reasoning.Exclude != nil {
+		return *req.Reasoning.Exclude
+	}
+	return false
+}
+
+// getReasoningMaxTokens gets the max_tokens value for reasoning (Anthropic-style)
+func (h *Handler) getReasoningMaxTokens(req ChatRequest) *int {
+	if req.Reasoning != nil {
+		return req.Reasoning.MaxTokens
+	}
+	return nil
+}
+
+// getReasoningEffort gets the effort value for reasoning (OpenAI-style)
+func (h *Handler) getReasoningEffort(req ChatRequest) string {
+	if req.Reasoning != nil {
+		return req.Reasoning.Effort
+	}
+	return ""
+}
+
 // extractChainFromMessages extracts the dialogue chain from messages
-func (h *Handler) extractChainFromMessages(messages []ChatMessage, reasoningEnabled bool) (*ParsedChain, error) {
+func (h *Handler) extractChainFromMessages(messages []ChatMessage, reasoningEnabled bool, reasoningExcluded bool) (*ParsedChain, error) {
 	// Look for system message with chain specification
 	for _, msg := range messages {
 		if msg.Role == "system" {
 			content := h.extractStringContent(msg.Content)
-			
+
 			// Check if content contains chain specification
 			// Chain spec format: #CHAIN: <chain-definition>
 			if idx := strings.Index(content, "#CHAIN:"); idx != -1 {
@@ -143,22 +173,22 @@ func (h *Handler) extractChainFromMessages(messages []ChatMessage, reasoningEnab
 				if nlIdx := strings.IndexAny(chainStr, "\n\r"); nlIdx != -1 {
 					chainStr = chainStr[:nlIdx]
 				}
-				return h.chainParser.Parse(chainStr, reasoningEnabled)
+				return h.chainParser.Parse(chainStr, reasoningEnabled, reasoningExcluded)
 			}
-			
+
 			// Also check for @chain directive
 			if idx := strings.Index(content, "@chain"); idx != -1 {
 				chainStr := strings.TrimSpace(content[idx+6:])
 				if nlIdx := strings.IndexAny(chainStr, "\n\r"); nlIdx != -1 {
 					chainStr = chainStr[:nlIdx]
 				}
-				return h.chainParser.Parse(chainStr, reasoningEnabled)
+				return h.chainParser.Parse(chainStr, reasoningEnabled, reasoningExcluded)
 			}
 		}
 	}
-	
+
 	// Default chain if no specification found
-	return h.chainParser.Parse("", reasoningEnabled)
+	return h.chainParser.Parse("", reasoningEnabled, reasoningExcluded)
 }
 
 // extractStringContent extracts string content from message content
@@ -209,7 +239,7 @@ func (h *Handler) ListModels(c *gin.Context) {
 			"owned_by": "mock",
 		},
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
 		"data":   models,
@@ -239,7 +269,7 @@ func (h *Handler) GetTestTool(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, tool)
 }
 
@@ -261,7 +291,7 @@ func (h *Handler) InvokeTestTool(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Parse arguments
 	var args map[string]interface{}
 	if err := c.ShouldBindJSON(&args); err != nil {
@@ -278,7 +308,7 @@ func (h *Handler) InvokeTestTool(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Find matching response scenario
 	var response TestToolResponse
 	for _, resp := range tool.Responses {
@@ -287,7 +317,7 @@ func (h *Handler) InvokeTestTool(c *gin.Context) {
 			break
 		}
 	}
-	
+
 	// Apply latency simulation
 	if tool.Latency != nil {
 		latencyRange := tool.Latency.Max - tool.Latency.Min
@@ -298,7 +328,7 @@ func (h *Handler) InvokeTestTool(c *gin.Context) {
 	} else if response.Latency > 0 {
 		time.Sleep(time.Duration(response.Latency) * time.Millisecond)
 	}
-	
+
 	// Return error if configured
 	if response.Error != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -306,13 +336,13 @@ func (h *Handler) InvokeTestTool(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	// Return result
 	var result interface{}
 	if err := json.Unmarshal(response.Result, &result); err != nil {
 		result = response.Result
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"tool":      name,
 		"arguments": args,
@@ -342,7 +372,7 @@ func (h *Handler) ListFaultPresets(c *gin.Context) {
 	for name, config := range FaultPresets {
 		presets[name] = config
 	}
-	
+
 	c.JSON(http.StatusOK, gin.H{
 		"presets": presets,
 	})
@@ -352,13 +382,13 @@ func (h *Handler) ListFaultPresets(c *gin.Context) {
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
-		
+
 		// Allow requests without auth for mock server
 		if authHeader == "" {
 			c.Next()
 			return
 		}
-		
+
 		// Validate Bearer token format if present
 		if !strings.HasPrefix(authHeader, "Bearer ") {
 			c.JSON(http.StatusUnauthorized, ErrorResponse{
@@ -375,7 +405,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		c.Next()
 	}
 }
@@ -387,12 +417,12 @@ func CORSMiddleware() gin.HandlerFunc {
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-OpenRouter-Title, HTTP-Referer, X-OpenRouter-Categories")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
-		
+
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
 		}
-		
+
 		c.Next()
 	}
 }

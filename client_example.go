@@ -95,6 +95,8 @@ func streamingChat() {
 }
 
 func reasoningChat() {
+	// 示例 3.1: 使用 effort 参数 (OpenAI 风格)
+	fmt.Println("\n3.1 使用 effort 参数 (high):")
 	req := ChatRequest{
 		Messages: []ChatMessage{
 			{Role: "user", Content: "Calculate 15 * 23"},
@@ -105,7 +107,7 @@ func reasoningChat() {
 		Stream: true,
 	}
 
-	fmt.Println("Streaming with reasoning:")
+	fmt.Println("Streaming with reasoning (effort=high):")
 	err := sendStreamingRequest(req, func(chunk ChatStreamChunk) {
 		if len(chunk.Choices) > 0 {
 			delta := chunk.Choices[0].Delta
@@ -121,6 +123,90 @@ func reasoningChat() {
 		fmt.Printf("Error: %v\n", err)
 	}
 	fmt.Println()
+
+	// 示例 3.2: 使用 max_tokens 参数 (Anthropic 风格)
+	fmt.Println("\n3.2 使用 max_tokens 参数 (500):")
+	maxTokens := 500
+	req2 := ChatRequest{
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Explain quantum computing"},
+		},
+		Reasoning: &ChatReasoningConfig{
+			MaxTokens: &maxTokens,
+		},
+		Stream: true,
+	}
+
+	fmt.Println("Streaming with reasoning (max_tokens=500):")
+	err = sendStreamingRequest(req2, func(chunk ChatStreamChunk) {
+		if len(chunk.Choices) > 0 {
+			delta := chunk.Choices[0].Delta
+			if delta.Reasoning != "" {
+				fmt.Printf("[Thinking: %s]", delta.Reasoning)
+			}
+			if delta.Content != "" {
+				fmt.Print(delta.Content)
+			}
+		}
+	})
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+	}
+	fmt.Println()
+
+	// 示例 3.3: 使用 enabled 参数显式启用
+	fmt.Println("\n3.3 使用 enabled 参数显式启用:")
+	enabled := true
+	req3 := ChatRequest{
+		Messages: []ChatMessage{
+			{Role: "user", Content: "What is machine learning?"},
+		},
+		Reasoning: &ChatReasoningConfig{
+			Enabled: &enabled,
+			Effort:  "medium",
+		},
+		Stream: true,
+	}
+
+	fmt.Println("Streaming with reasoning (enabled=true):")
+	err = sendStreamingRequest(req3, func(chunk ChatStreamChunk) {
+		if len(chunk.Choices) > 0 {
+			delta := chunk.Choices[0].Delta
+			if delta.Reasoning != "" {
+				fmt.Printf("[Thinking: %s]", delta.Reasoning)
+			}
+			if delta.Content != "" {
+				fmt.Print(delta.Content)
+			}
+		}
+	})
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+	}
+	fmt.Println()
+
+	// 示例 3.4: 使用 exclude 参数排除推理内容（仅统计，不显示）
+	fmt.Println("\n3.4 使用 exclude=true 排除推理内容（统计中仍包含）:")
+	exclude := true
+	req4 := ChatRequest{
+		Messages: []ChatMessage{
+			{Role: "user", Content: "Explain neural networks"},
+		},
+		Reasoning: &ChatReasoningConfig{
+			Effort:  "high",
+			Exclude: &exclude,
+		},
+		Stream: false, // 非流式模式
+	}
+
+	fmt.Println("Non-streaming with reasoning (exclude=true):")
+	resp, err := sendRequest(req4)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	printResponse(resp)
+	fmt.Println("(注意: reasoning tokens 被排除在响应外，但仍计入 usage)")
 }
 
 func chainChat() {
@@ -360,7 +446,10 @@ type ChatMessage struct {
 }
 
 type ChatReasoningConfig struct {
-	Effort string `json:"effort,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
+	Effort    string `json:"effort,omitempty"`
+	MaxTokens *int   `json:"max_tokens,omitempty"`
+	Exclude   *bool  `json:"exclude,omitempty"`
 }
 
 type ChatFunctionTool struct {
