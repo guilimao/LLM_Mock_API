@@ -9,7 +9,6 @@ import (
 )
 
 func main() {
-	// Parse command line flags
 	var (
 		port       = flag.String("port", "8080", "Server port")
 		host       = flag.String("host", "localhost", "Server host")
@@ -19,64 +18,39 @@ func main() {
 		disableLog = flag.Bool("no-log", false, "Disable request logging")
 	)
 	flag.Parse()
-	
-	// Set Gin mode
+
 	if !*debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
-	
-	// Create router
+
 	router := gin.New()
 	router.Use(gin.Recovery())
 	router.Use(CORSMiddleware())
-	
-	// 添加请求日志中间件
+
 	if !*disableLog {
 		requestLogger := NewRequestLogger(*logDir)
 		router.Use(requestLogger.LogMiddleware())
 	}
-	
 	if *debug {
 		router.Use(gin.Logger())
 	}
-	
-	// Create handler
+
 	handler := NewHandler(*model)
-	
-	// Register routes
 	handler.RegisterRoutes(router)
-	
-	// Print startup message
-	fmt.Printf("╔═══════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║                 LLM Mock API Server                           ║\n")
-	fmt.Printf("╠═══════════════════════════════════════════════════════════════╣\n")
-	fmt.Printf("║  Server:   http://%s:%s                                      ║\n", *host, *port)
-	fmt.Printf("║  API:      http://%s:%s/api/v1/chat/completions              ║\n", *host, *port)
-	fmt.Printf("║  Health:   http://%s:%s/health                               ║\n", *host, *port)
-	fmt.Printf("║  Tools:    http://%s:%s/test-tools                           ║\n", *host, *port)
-	fmt.Printf("╠═══════════════════════════════════════════════════════════════╣\n")
-	fmt.Printf("║  Features:                                                    ║\n")
-	fmt.Printf("║    ✓ Streaming responses (SSE)                               ║\n")
-	fmt.Printf("║    ✓ Reasoning mode (enable with reasoning.effort)           ║\n")
-	fmt.Printf("║    ✓ Tool calls simulation                                   ║\n")
-	fmt.Printf("║    ✓ Multimodal output                                       ║\n")
-	fmt.Printf("║    ✓ Fault simulation                                        ║\n")
-	fmt.Printf("║    ✓ Dialogue chain control                                  ║\n")
-	fmt.Printf("║    ✓ Request/Response logging                                ║\n")
-	fmt.Printf("╠═══════════════════════════════════════════════════════════════╣\n")
+
+	fmt.Println("LLM Mock API Server")
+	fmt.Printf("Server: http://%s:%s\n", *host, *port)
+	fmt.Printf("API:    http://%s:%s/api/v1/chat/completions\n", *host, *port)
+	fmt.Printf("Health: http://%s:%s/health\n", *host, *port)
 	if !*disableLog {
-		fmt.Printf("║  Log Dir:  %s\n", *logDir)
-		fmt.Printf("╚═══════════════════════════════════════════════════════════════╝\n")
+		fmt.Printf("Logs:   %s\n", *logDir)
 	} else {
-		fmt.Printf("║  Logging:  Disabled (--no-log)                               ║\n")
-		fmt.Printf("╚═══════════════════════════════════════════════════════════════╝\n")
+		fmt.Println("Logs:   disabled")
 	}
 	fmt.Println()
-	
-	// Print example usage
+
 	printUsageExamples()
-	
-	// Start server
+
 	address := fmt.Sprintf("%s:%s", *host, *port)
 	if err := router.Run(address); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start server: %v\n", err)
@@ -87,107 +61,66 @@ func main() {
 func printUsageExamples() {
 	fmt.Println("Usage Examples:")
 	fmt.Println()
-	
+
 	fmt.Println("1. Simple chat completion:")
 	fmt.Println("   curl -X POST http://localhost:8080/api/v1/chat/completions \\")
 	fmt.Println("     -H 'Content-Type: application/json' \\")
-	fmt.Println("     -d '{" +
-		"\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]," +
-		"\"model\":\"mock/llm-model\"}'")
+	fmt.Println("     -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"model\":\"mock/llm-model\"}'")
 	fmt.Println()
-	
+
 	fmt.Println("2. Streaming response:")
 	fmt.Println("   curl -X POST http://localhost:8080/api/v1/chat/completions \\")
 	fmt.Println("     -H 'Content-Type: application/json' \\")
-	fmt.Println("     -d '{" +
-		"\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]," +
-		"\"stream\":true}'")
+	fmt.Println("     -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":true}'")
 	fmt.Println()
-	
-	fmt.Println("3. With reasoning enabled:")
-	fmt.Println("   curl -X POST http://localhost:8080/api/v1/chat/completions \\")
-	fmt.Println("     -H 'Content-Type: application/json' \\")
-	fmt.Println("     -d '{" +
-		"\"messages\":[{\"role\":\"user\",\"content\":\"Solve 2+2\"}]," +
-		"\"reasoning\":{\"effort\":\"medium\"}," +
-		"\"stream\":true}'")
-	fmt.Println()
-	
-	fmt.Println("4. With dialogue chain (system prompt):")
+
+	fmt.Println("3. Staged tool round-trip:")
 	fmt.Println("   curl -X POST http://localhost:8080/api/v1/chat/completions \\")
 	fmt.Println("     -H 'Content-Type: application/json' \\")
 	fmt.Println("     -d '{")
 	fmt.Println("       \"messages\":[")
-	fmt.Println("         {\"role\":\"system\",\"content\":\"#CHAIN: reasoning-content-tool_calls\"},")
-	fmt.Println("         {\"role\":\"user\",\"content\":\"What's the weather?\"}")
+	fmt.Println("         {\"role\":\"system\",\"content\":\"#CHAIN_STEP1: tool_calls{name=get_weather,args={\\\"location\\\":\\\"Shanghai\\\"}}\\n#CHAIN_STEP2: content{text=Tool results received.}\"},")
+	fmt.Println("         {\"role\":\"user\",\"content\":\"What is the weather?\"}")
 	fmt.Println("       ],")
 	fmt.Println("       \"stream\":true,")
-	fmt.Println("       \"tools\":[{")
-	fmt.Println("         \"type\":\"function\",")
-	fmt.Println("         \"function\":{")
-	fmt.Println("           \"name\":\"get_weather\",")
-	fmt.Println("           \"description\":\"Get weather information\"")
-	fmt.Println("         }")
-	fmt.Println("       }]")
+	fmt.Println("       \"debug\":{\"deterministic\":true,\"chain_trace\":true},")
+	fmt.Println("       \"seed\":7,")
+	fmt.Println("       \"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get weather information\"}}]")
 	fmt.Println("     }'")
 	fmt.Println()
-	
-	fmt.Println("5. With fault simulation:")
+
+	fmt.Println("4. Continue after executing the real tool on the client:")
 	fmt.Println("   curl -X POST http://localhost:8080/api/v1/chat/completions \\")
 	fmt.Println("     -H 'Content-Type: application/json' \\")
 	fmt.Println("     -d '{")
-	fmt.Println("       \"messages\":[{")
-	fmt.Println("         \"role\":\"system\",")
-	fmt.Println("         \"content\":\"#CHAIN: content{fault=delay,fault_duration=2s,text=Delayed response}\"")
-	fmt.Println("       },{")
-	fmt.Println("         \"role\":\"user\",\"content\":\"Hello\"}")
-	fmt.Println("       ],")
-	fmt.Println("       \"stream\":true")
+	fmt.Println("       \"messages\":[")
+	fmt.Println("         {\"role\":\"system\",\"content\":\"#CHAIN_STEP1: tool_calls{name=get_weather,args={\\\"location\\\":\\\"Shanghai\\\"}}\\n#CHAIN_STEP2: content{text=The tool result has been consumed.}\"},")
+	fmt.Println("         {\"role\":\"user\",\"content\":\"What is the weather?\"},")
+	fmt.Println("         {\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Shanghai\\\"}\"}}]},")
+	fmt.Println("         {\"role\":\"tool\",\"tool_call_id\":\"call_1\",\"content\":\"{\\\"temperature\\\":26}\"}")
+	fmt.Println("       ]")
 	fmt.Println("     }'")
 	fmt.Println()
-	
-	fmt.Println("6. List available test tools:")
-	fmt.Println("   curl http://localhost:8080/test-tools")
-	fmt.Println()
-	
-	fmt.Println("7. Invoke a test tool:")
-	fmt.Println("   curl -X POST http://localhost:8080/test-tools/get_weather/invoke \\")
+
+	fmt.Println("5. Fault simulation:")
+	fmt.Println("   curl -X POST http://localhost:8080/api/v1/chat/completions \\")
 	fmt.Println("     -H 'Content-Type: application/json' \\")
-	fmt.Println("     -d '{\"location\":\"Beijing\",\"unit\":\"celsius\"}'")
+	fmt.Println("     -d '{\"messages\":[{\"role\":\"system\",\"content\":\"#CHAIN: content{fault=delay,fault_duration=2s,text=Delayed response}\"},{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":true}'")
 	fmt.Println()
-	
-	fmt.Println("8. List fault presets:")
+
+	fmt.Println("6. List fault presets:")
 	fmt.Println("   curl http://localhost:8080/fault-presets")
 	fmt.Println()
-	
+
 	fmt.Println("Dialogue Chain Syntax:")
 	fmt.Println("  - Nodes are separated by '-' for sequential execution")
 	fmt.Println("  - Segments are separated by ',' for concurrent groups")
-	fmt.Println("  - Use 'parallel:' prefix for concurrent nodes in a segment")
+	fmt.Println("  - Use 'parallel:' for concurrent nodes in a segment")
+	fmt.Println("  - Use '#CHAIN:' for single-stage responses")
+	fmt.Println("  - Use '#CHAIN_STEPn:' for multi-round tool flows")
 	fmt.Println()
-	fmt.Println("  Node Types:")
-	fmt.Println("    reasoning    - Thinking/reasoning content")
-	fmt.Println("    content      - Regular text content")
-	fmt.Println("    tool_calls   - Tool/function calls")
-	fmt.Println("    mixed        - Combination of reasoning + content")
-	fmt.Println("    image        - Image output")
-	fmt.Println("    audio        - Audio output")
-	fmt.Println()
-	fmt.Println("  Parameters:")
-	fmt.Println("    text=<text>               - Content text")
-	fmt.Println("    reasoning=<text>          - Reasoning text")
-	fmt.Println("    char_delay=<duration>     - Delay between characters")
-	fmt.Println("    chunk_size=<n>            - Characters per chunk")
-	fmt.Println("    chunk_delay=<duration>    - Delay between chunks")
-	fmt.Println("    fault=<type>              - Fault type to simulate")
-	fmt.Println("    fault_prob=<0.0-1.0>      - Fault probability")
-	fmt.Println("    fault_duration=<duration> - Fault duration")
-	fmt.Println()
-	fmt.Println("  Examples:")
-	fmt.Println("    reasoning-content-tool_calls")
-	fmt.Println("    reasoning{text=Let me think...}-content{text=Here's the answer}")
-	fmt.Println("    tool_calls{name=get_weather,args={\"loc\":\"NYC\"}}")
-	fmt.Println("    content{fault=delay,fault_duration=1s,text=Slow response}")
-	fmt.Println("    reasoning, parallel:tool_calls, content")
+	fmt.Println("Tool Call Parameters:")
+	fmt.Println("  - name / args / id for the first tool call")
+	fmt.Println("  - name2 / args2 / id2 for additional tool calls")
 	fmt.Println()
 }

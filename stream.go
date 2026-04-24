@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"strings"
 	"time"
 
@@ -27,7 +26,7 @@ func NewStreamHandler(modelName string) *StreamHandler {
 }
 
 // GenerateStream generates a streaming response
-func (sh *StreamHandler) GenerateStream(c *gin.Context, req ChatRequest, chain *ParsedChain, reasoningEnabled bool, reasoningExcluded bool) error {
+func (sh *StreamHandler) GenerateStream(c *gin.Context, req ChatRequest, chain *ParsedChain, reasoningEnabled bool, reasoningExcluded bool, execOpts *RequestExecutionOptions) error {
 	// Set headers for SSE
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -39,8 +38,8 @@ func (sh *StreamHandler) GenerateStream(c *gin.Context, req ChatRequest, chain *
 	flusher := writer
 
 	// Generate unique ID
-	streamID := generateStreamID()
-	created := time.Now().Unix()
+	streamID := execOpts.ResponseID()
+	created := execOpts.Created
 
 	// Send initial role message
 	if err := sh.sendRoleChunk(writer, flusher, streamID, created, 0); err != nil {
@@ -415,16 +414,12 @@ func (sh *StreamHandler) hasConcurrentNodes(segment []ChainNode) bool {
 	return false
 }
 
-func generateStreamID() string {
-	return fmt.Sprintf("chatcmpl-%d%d", time.Now().Unix(), rand.Intn(1000000))
-}
-
 // Non-streaming response generation
-func (sh *StreamHandler) GenerateNonStream(req ChatRequest, chain *ParsedChain, reasoningEnabled bool, reasoningExcluded bool) *ChatResponse {
+func (sh *StreamHandler) GenerateNonStream(req ChatRequest, chain *ParsedChain, reasoningEnabled bool, reasoningExcluded bool, execOpts *RequestExecutionOptions) *ChatResponse {
 	response := &ChatResponse{
-		ID:      generateStreamID(),
+		ID:      execOpts.ResponseID(),
 		Object:  "chat.completion",
-		Created: time.Now().Unix(),
+		Created: execOpts.Created,
 		Model:   sh.modelName,
 		Choices: []ChatChoice{},
 		Usage: &ChatUsage{

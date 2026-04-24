@@ -1,1424 +1,301 @@
 openapi: 3.1.0
 info:
-    title: OpenRouter API
-    version: 1.0.0
-    description: OpenAI-compatible API with additional OpenRouter features
-    contact:
-        name: OpenRouter Support
-        url: https://openrouter.ai/docs
-        email: support@openrouter.ai
-    license:
-        name: MIT
-        url: https://opensource.org/licenses/MIT
+  title: LLM Mock API Server
+  version: 1.1.0
+  description: |
+    OpenAI-compatible mock server for testing streaming, reasoning, staged tool calling,
+    and fault injection. Tool testing is driven through `/api/v1/chat/completions`.
 servers:
-    - url: https://openrouter.ai/api/v1
-      description: Production server
-      x-speakeasy-server-id: production
-security:
-    - apiKey: []
-externalDocs:
-    description: OpenRouter Documentation
-    url: https://openrouter.ai/docs
-components:
-    schemas:
-        ChatRequest:
-            type: object
-            properties:
-                provider:
-                    type: object
-                    nullable: true
-                    properties:
-                        allow_fallbacks:
-                            type: boolean
-                            nullable: true
-                            description: >
-                                Whether to allow backup providers to serve requests
-
-                                - true: (default) when the primary provider (or your custom providers in "order") is unavailable, use the next best provider.
-
-                                - false: use only the primary/custom provider, and return the upstream error if it's unavailable.
-
-                        require_parameters:
-                            type: boolean
-                            nullable: true
-                            description: >-
-                                Whether to filter providers to only those that support the parameters you've provided. If this setting is omitted or set to false, then providers will receive only the parameters they support, and ignore the rest.
-                        data_collection:
-                            $ref: '#/components/schemas/DataCollection'
-                        zdr:
-                            type: boolean
-                            nullable: true
-                            description: >-
-                                Whether to restrict routing to only ZDR (Zero Data Retention) endpoints. When true, only endpoints that do not retain prompts will be used.
-                            example: true
-                        enforce_distillable_text:
-                            type: boolean
-                            nullable: true
-                            description: >-
-                                Whether to restrict routing to only models that allow text distillation. When true, only models where the author has allowed distillation will be used.
-                            example: true
-                        order:
-                            type: array
-                            nullable: true
-                            items:
-                                anyOf:
-                                    - $ref: '#/components/schemas/ProviderName'
-                                    - type: string
-                            description: >-
-                                An ordered list of provider slugs. The router will attempt to use the first provider in the subset of this list that supports your requested model, and fall back to the next if it is unavailable. If no providers are available, the request will fail with an error message.
-                        only:
-                            type: array
-                            nullable: true
-                            items:
-                                anyOf:
-                                    - $ref: '#/components/schemas/ProviderName'
-                                    - type: string
-                            description: >-
-                                List of provider slugs to allow. If provided, this list is merged with your account-wide allowed provider settings for this request.
-                        ignore:
-                            type: array
-                            nullable: true
-                            items:
-                                anyOf:
-                                    - $ref: '#/components/schemas/ProviderName'
-                                    - type: string
-                            description: >-
-                                List of provider slugs to ignore. If provided, this list is merged with your account-wide ignored provider settings for this request.
-                        quantizations:
-                            type: array
-                            nullable: true
-                            items:
-                                $ref: '#/components/schemas/Quantization'
-                            description: A list of quantization levels to filter the provider by.
-                        sort:
-                            allOf:
-                                - $ref: '#/components/schemas/ProviderSort'
-                                - anyOf:
-                                    - $ref: '#/components/schemas/ProviderSort'
-                                    - $ref: '#/components/schemas/ProviderSortConfig'
-                                    - nullable: true
-                                  description: >-
-                                    The sorting strategy to use for this request, if "order" is not specified. When set, no load balancing is performed.
-                        max_price:
-                            type: object
-                            properties:
-                                prompt:
-                                    $ref: '#/components/schemas/BigNumberUnion'
-                                completion:
-                                    allOf:
-                                        - $ref: '#/components/schemas/BigNumberUnion'
-                                        - description: Price per million completion tokens
-                                image:
-                                    allOf:
-                                        - $ref: '#/components/schemas/BigNumberUnion'
-                                        - description: Price per image
-                                audio:
-                                    allOf:
-                                        - $ref: '#/components/schemas/BigNumberUnion'
-                                        - description: Price per audio unit
-                                request:
-                                    allOf:
-                                        - $ref: '#/components/schemas/BigNumberUnion'
-                                        - description: Price per request
-                            description: >-
-                                The object specifying the maximum price you want to pay for this request. USD price per million tokens, for prompt and completion.
-                        preferred_min_throughput:
-                            $ref: '#/components/schemas/PreferredMinThroughput'
-                        preferred_max_latency:
-                            $ref: '#/components/schemas/PreferredMaxLatency'
-                    additionalProperties: false
-                    description: When multiple model providers are available, optionally indicate your routing preference.
-                plugins:
-                    type: array
-                    items:
-                        oneOf:
-                            - type: object
-                              properties:
-                                id:
-                                    type: string
-                                    enum:
-                                        - auto-router
-                                enabled:
-                                    type: boolean
-                                    description: Set to false to disable the auto-router plugin for this request. Defaults to true.
-                                allowed_models:
-                                    type: array
-                                    items:
-                                        type: string
-                                    description: >-
-                                        List of model patterns to filter which models the auto-router can route between. Supports wildcards (e.g., "anthropic/*" matches all Anthropic models). When not specified, uses the default supported models list.
-                                    example:
-                                        - anthropic/*
-                                        - openai/gpt-4o
-                                        - google/*
-                              required:
-                                - id
-                            - type: object
-                              properties:
-                                id:
-                                    type: string
-                                    enum:
-                                        - moderation
-                              required:
-                                - id
-                            - type: object
-                              properties:
-                                id:
-                                    type: string
-                                    enum:
-                                        - web
-                                enabled:
-                                    type: boolean
-                                    description: Set to false to disable the web-search plugin for this request. Defaults to true.
-                                max_results:
-                                    type: number
-                                search_prompt:
-                                    type: string
-                                engine:
-                                    $ref: '#/components/schemas/WebSearchEngine'
-                                include_domains:
-                                    type: array
-                                    items:
-                                        type: string
-                                    description: >-
-                                        A list of domains to restrict web search results to. Supports wildcards (e.g. "*.substack.com") and path filtering (e.g. "openai.com/blog").
-                                    example:
-                                        - example.com
-                                        - '*.substack.com'
-                                        - openai.com/blog
-                                exclude_domains:
-                                    type: array
-                                    items:
-                                        type: string
-                                    description: >-
-                                        A list of domains to exclude from web search results. Supports wildcards (e.g. "*.substack.com") and path filtering (e.g. "openai.com/blog").
-                                    example:
-                                        - example.com
-                                        - '*.substack.com'
-                                        - openai.com/blog
-                              required:
-                                - id
-                            - type: object
-                              properties:
-                                id:
-                                    type: string
-                                    enum:
-                                        - file-parser
-                                enabled:
-                                    type: boolean
-                                    description: Set to false to disable the file-parser plugin for this request. Defaults to true.
-                                pdf:
-                                    $ref: '#/components/schemas/PDFParserOptions'
-                              required:
-                                - id
-                            - type: object
-                              properties:
-                                id:
-                                    type: string
-                                    enum:
-                                        - response-healing
-                                enabled:
-                                    type: boolean
-                                    description: Set to false to disable the response-healing plugin for this request. Defaults to true.
-                              required:
-                                - id
-                            - type: object
-                              properties:
-                                id:
-                                    type: string
-                                    enum:
-                                        - context-compression
-                                enabled:
-                                    type: boolean
-                                    description: Set to false to disable the context-compression plugin for this request. Defaults to true.
-                                engine:
-                                    $ref: '#/components/schemas/ContextCompressionEngine'
-                              required:
-                                - id
-                    description: Plugins you want to enable for this request, including their settings.
-                route:
-                    type: string
-                    nullable: true
-                    enum:
-                        - fallback
-                        - sort
-                    deprecated: true
-                    description: >-
-                        **DEPRECATED** Use providers.sort.partition instead. Backwards-compatible alias for providers.sort.partition. Accepts legacy values: "fallback" (maps to "model"), "sort" (maps to "none").
-                    x-speakeasy-deprecation-message: Use providers.sort.partition instead.
-                    x-speakeasy-ignore: true
-                    x-fern-ignore: true
-                    x-speakeasy-unknown-values: allow
-                user:
-                    type: string
-                    description: Unique user identifier
-                    example: user-123
-                session_id:
-                    type: string
-                    maxLength: 256
-                    description: >-
-                        A unique identifier for grouping related requests (e.g., a conversation or agent workflow) for observability. If provided in both the request body and the x-session-id header, the body value takes precedence. Maximum of 256 characters.
-                trace:
-                    type: object
-                    properties:
-                        trace_id:
-                            type: string
-                        trace_name:
-                            type: string
-                        span_name:
-                            type: string
-                        generation_name:
-                            type: string
-                        parent_span_id:
-                            type: string
-                    additionalProperties:
-                        nullable: true
-                    description: >-
-                        Metadata for observability and tracing. Known keys (trace_id, trace_name, span_name, generation_name, parent_span_id) have special handling. Additional keys are passed through as custom metadata to configured broadcast destinations.
-                messages:
-                    type: array
-                    items:
-                        $ref: '#/components/schemas/ChatMessages'
-                    minItems: 1
-                    description: List of messages for the conversation
-                    example:
-                        - role: user
-                          content: Hello!
-                model:
-                    $ref: '#/components/schemas/ModelName'
-                models:
-                    $ref: '#/components/schemas/ChatModelNames'
-                frequency_penalty:
-                    type: number
-                    nullable: true
-                    minimum: -2
-                    maximum: 2
-                    description: Frequency penalty (-2.0 to 2.0)
-                    example: 0
-                logit_bias:
-                    type: object
-                    nullable: true
-                    additionalProperties:
-                        type: number
-                    description: Token logit bias adjustments
-                    example:
-                        '50256': -100
-                logprobs:
-                    type: boolean
-                    nullable: true
-                    description: Return log probabilities
-                    example: false
-                top_logprobs:
-                    type: number
-                    nullable: true
-                    minimum: 0
-                    maximum: 20
-                    description: Number of top log probabilities to return (0-20)
-                    example: 5
-                max_completion_tokens:
-                    type: number
-                    nullable: true
-                    minimum: 1
-                    description: Maximum tokens in completion
-                    example: 100
-                max_tokens:
-                    type: number
-                    nullable: true
-                    minimum: 1
-                    description: 'Maximum tokens (deprecated, use max_completion_tokens). Note: some providers enforce a minimum of 16.'
-                    example: 100
-                metadata:
-                    type: object
-                    additionalProperties:
-                        type: string
-                    description: Key-value pairs for additional object information (max 16 pairs, 64 char keys, 512 char values)
-                    example:
-                        user_id: user-123
-                        session_id: session-456
-                presence_penalty:
-                    type: number
-                    nullable: true
-                    minimum: -2
-                    maximum: 2
-                    description: Presence penalty (-2.0 to 2.0)
-                    example: 0
-                reasoning:
-                    type: object
-                    properties:
-                        effort:
-                            type: string
-                            nullable: true
-                            enum:
-                                - xhigh
-                                - high
-                                - medium
-                                - low
-                                - minimal
-                                - none
-                            description: Constrains effort on reasoning for reasoning models
-                            example: medium
-                            x-speakeasy-unknown-values: allow
-                        summary:
-                            anyOf:
-                                - $ref: '#/components/schemas/ChatReasoningSummaryVerbosityEnum'
-                                - nullable: true
-                                - nullable: true
-                    description: Configuration options for reasoning models
-                    example:
-                        effort: medium
-                        summary: concise
-                response_format:
-                    oneOf:
-                        - $ref: '#/components/schemas/ChatFormatTextConfig'
-                        - $ref: '#/components/schemas/FormatJsonObjectConfig'
-                        - $ref: '#/components/schemas/ChatFormatJsonSchemaConfig'
-                        - $ref: '#/components/schemas/ChatFormatGrammarConfig'
-                        - $ref: '#/components/schemas/ChatFormatPythonConfig'
-                    discriminator:
-                        propertyName: type
-                    description: Response format configuration
-                    example:
-                        type: json_object
-                seed:
-                    type: integer
-                    nullable: true
-                    description: Random seed for deterministic outputs
-                    example: 42
-                stop:
-                    anyOf:
-                        - type: string
-                        - type: array
-                          items:
-                            type: string
-                          maxItems: 4
-                        - nullable: true
-                    description: Stop sequences (up to 4)
-                    example:
-                        - ""
-                stream:
-                    type: boolean
-                    default: false
-                    description: Enable streaming response
-                    example: false
-                stream_options:
-                    $ref: '#/components/schemas/ChatStreamOptions'
-                temperature:
-                    type: number
-                    nullable: true
-                    minimum: 0
-                    maximum: 2
-                    default: 1
-                    description: Sampling temperature (0-2)
-                    example: 0.7
-                parallel_tool_calls:
-                    type: boolean
-                    nullable: true
-                tool_choice:
-                    $ref: '#/components/schemas/ChatToolChoice'
-                tools:
-                    type: array
-                    items:
-                        $ref: '#/components/schemas/ChatFunctionTool'
-                    description: Available tools for function calling
-                    example:
-                        - type: function
-                          function:
-                            name: get_weather
-                            description: Get weather
-                top_p:
-                    type: number
-                    nullable: true
-                    minimum: 0
-                    maximum: 1
-                    default: 1
-                    description: Nucleus sampling parameter (0-1)
-                    example: 1
-                debug:
-                    $ref: '#/components/schemas/ChatDebugOptions'
-                image_config:
-                    type: object
-                    additionalProperties:
-                        anyOf:
-                            - type: string
-                            - type: number
-                            - type: array
-                              items:
-                                nullable: true
-                    description: >-
-                        Provider-specific image configuration options. Keys and values vary by model/provider. See https://openrouter.ai/docs/guides/overview/multimodal/image-generation for more details.
-                    example:
-                        aspect_ratio: '16:9'
-                modalities:
-                    type: array
-                    items:
-                        type: string
-                        enum:
-                            - text
-                            - image
-                            - audio
-                        x-speakeasy-unknown-values: allow
-                    description: Output modalities for the response. Supported values are "text", "image", and "audio".
-                    example:
-                        - text
-                        - image
-                cache_control:
-                    type: object
-                    properties:
-                        type:
-                            type: string
-                            enum:
-                                - ephemeral
-                        ttl:
-                            type: string
-                            enum:
-                                - 5m
-                                - 1h
-                            x-speakeasy-unknown-values: allow
-                    required:
-                        - type
-                    description: >-
-                        Enable automatic prompt caching. When set, the system automatically applies cache breakpoints to the last cacheable block in the request. Currently supported for Anthropic Claude models.
-                service_tier:
-                    type: string
-                    nullable: true
-                    enum:
-                        - auto
-                        - default
-                        - flex
-                        - priority
-                        - scale
-                    description: The service tier to use for processing this request.
-                    example: auto
-                    x-speakeasy-unknown-values: allow
-            required:
-                - messages
-            description: Chat completion request parameters
-            example:
-                messages:
-                    - role: system
-                      content: You are a helpful assistant.
-                    - role: user
-                      content: What is the capital of France?
-                model: openai/gpt-4
-                temperature: 0.7
-                max_tokens: 150
-        ChatStreamToolCall:
-            type: object
-            properties:
-                index:
-                    type: number
-                    description: Tool call index in the array
-                    example: 0
-                id:
-                    type: string
-                    description: Tool call identifier
-                    example: call_abc123
-                type:
-                    type: string
-                    enum:
-                        - function
-                    description: Tool call type
-                    example: function
-                function:
-                    type: object
-                    properties:
-                        name:
-                            type: string
-                            description: Function name
-                            example: get_weather
-                        arguments:
-                            type: string
-                            description: Function arguments as JSON string
-                            example: '{"location":'
-                    description: Function call details
-            required:
-                - index
-            description: Tool call delta for streaming responses
-            example:
-                index: 0
-                id: call_abc123
-                type: function
-                function:
-                    name: get_weather
-                    arguments: '{"location":'
-        ChatStreamDelta:
-            type: object
-            properties:
-                role:
-                    type: string
-                    enum:
-                        - assistant
-                    description: The role of the message author
-                    example: assistant
-                content:
-                    type: string
-                    nullable: true
-                    description: Message content delta
-                    example: Hello
-                reasoning:
-                    type: string
-                    nullable: true
-                    description: Reasoning content delta
-                    example: I need to
-                refusal:
-                    type: string
-                    nullable: true
-                    description: Refusal message delta
-                    example: null
-                tool_calls:
-                    type: array
-                    items:
-                        $ref: '#/components/schemas/ChatStreamToolCall'
-                    description: Tool calls delta
-                reasoning_details:
-                    $ref: '#/components/schemas/ChatReasoningDetails'
-                audio:
-                    allOf:
-                        - $ref: '#/components/schemas/ChatAudioOutput'
-                        - description: Audio output data
-            description: Delta changes in streaming response
-            example:
-                role: assistant
-                content: Hello
-        ChatStreamChoice:
-            type: object
-            properties:
-                delta:
-                    $ref: '#/components/schemas/ChatStreamDelta'
-                finish_reason:
-                    anyOf:
-                        - $ref: '#/components/schemas/ChatFinishReasonEnum'
-                        - nullable: true
-                        - nullable: true
-                index:
-                    type: number
-                    description: Choice index
-                    example: 0
-                logprobs:
-                    $ref: '#/components/schemas/ChatTokenLogprobs'
-            required:
-                - delta
-                - finish_reason
-                - index
-            description: Streaming completion choice chunk
-            example:
-                index: 0
-                delta:
-                    role: assistant
-                    content: Hello
-                finish_reason: null
-        ChatStreamChunk:
-            type: object
-            properties:
-                id:
-                    type: string
-                    description: Unique chunk identifier
-                    example: chatcmpl-123
-                choices:
-                    type: array
-                    items:
-                        $ref: '#/components/schemas/ChatStreamChoice'
-                    description: List of streaming chunk choices
-                created:
-                    type: number
-                    description: Unix timestamp of creation
-                    example: 1677652288
-                model:
-                    type: string
-                    description: Model used for completion
-                    example: openai/gpt-4
-                object:
-                    type: string
-                    enum:
-                        - chat.completion.chunk
-                system_fingerprint:
-                    type: string
-                    description: System fingerprint
-                    example: fp_44709d6fcb
-                service_tier:
-                    type: string
-                    nullable: true
-                    description: The service tier used by the upstream provider for this request
-                    example: default
-                error:
-                    type: object
-                    properties:
-                        message:
-                            type: string
-                            description: Error message
-                            example: Rate limit exceeded
-                        code:
-                            type: number
-                            description: Error code
-                            example: 429
-                    required:
-                        - message
-                        - code
-                    description: Error information
-                    example:
-                        message: Rate limit exceeded
-                        code: 429
-                usage:
-                    $ref: '#/components/schemas/ChatUsage'
-            required:
-                - id
-                - choices
-                - created
-                - model
-                - object
-            description: Streaming chat completion chunk
-            x-speakeasy-entity: ChatStreamChunk
-            example:
-                id: chatcmpl-123
-                object: chat.completion.chunk
-                created: 1677652288
-                model: openai/gpt-4
-                choices:
-                    - index: 0
-                      delta:
-                        role: assistant
-                        content: Hello
-                      finish_reason: null
-        ChatSystemMessage:
-            type: object
-            properties:
-                role:
-                    type: string
-                    enum:
-                        - system
-                content:
-                    anyOf:
-                        - type: string
-                        - type: array
-                          items:
-                            $ref: '#/components/schemas/ChatContentText'
-                    description: System message content
-                    example: You are a helpful assistant.
-                name:
-                    type: string
-                    description: Optional name for the system message
-                    example: Assistant Config
-            required:
-                - role
-                - content
-            description: System message for setting behavior
-            example:
-                role: system
-                content: You are a helpful assistant.
-                name: Assistant Config
-        ChatUserMessage:
-            type: object
-            properties:
-                role:
-                    type: string
-                    enum:
-                        - user
-                content:
-                    anyOf:
-                        - type: string
-                        - type: array
-                          items:
-                            $ref: '#/components/schemas/ChatContentItems'
-                    description: User message content
-                    example: What is the capital of France?
-                name:
-                    type: string
-                    description: Optional name for the user
-                    example: User
-            required:
-                - role
-                - content
-            description: User message
-            example:
-                role: user
-                content: What is the capital of France?
-        ChatToolMessage:
-            type: object
-            properties:
-                role:
-                    type: string
-                    enum:
-                        - tool
-                content:
-                    anyOf:
-                        - type: string
-                        - type: array
-                          items:
-                            $ref: '#/components/schemas/ChatContentItems'
-                    description: Tool response content
-                    example: The weather in San Francisco is 72°F and sunny.
-                tool_call_id:
-                    type: string
-                    description: ID of the assistant message tool call this message responds to
-                    example: call_abc123
-            required:
-                - role
-                - content
-                - tool_call_id
-            description: Tool response message
-            example:
-                role: tool
-                content: The weather in San Francisco is 72°F and sunny.
-                tool_call_id: call_abc123
-        ChatMessages:
-            oneOf:
-                - $ref: '#/components/schemas/ChatSystemMessage'
-                - $ref: '#/components/schemas/ChatUserMessage'
-                - $ref: '#/components/schemas/ChatAssistantMessage'
-                - $ref: '#/components/schemas/ChatToolMessage'
-            discriminator:
-                propertyName: role
-            description: Chat completion message with role-based discrimination
-            example:
-                role: user
-                content: What is the capital of France?
-        ModelName:
-            type: string
-            description: Model to use for completion
-            example: openai/gpt-4
-        ChatContentItems:
-            oneOf:
-                - $ref: '#/components/schemas/ChatContentText'
-                - $ref: '#/components/schemas/ChatContentImage'
-                - $ref: '#/components/schemas/ChatContentAudio'
-                - oneOf:
-                    - $ref: '#/components/schemas/Legacy_ChatContentVideo'
-                    - $ref: '#/components/schemas/ChatContentVideo'
-                  discriminator:
-                    propertyName: type
-                    mapping:
-                        input_video: '#/components/schemas/Legacy_ChatContentVideo'
-                        video_url: '#/components/schemas/ChatContentVideo'
-                - $ref: '#/components/schemas/ChatContentFile'
-            discriminator:
-                propertyName: type
-            description: Content part for chat completion messages
-            example:
-                type: text
-                text: Hello, world!
-        ChatContentText:
-            type: object
-            properties:
-                type:
-                    type: string
-                    enum:
-                        - text
-                text:
-                    type: string
-                cache_control:
-                    $ref: '#/components/schemas/ChatContentCacheControl'
-            required:
-                - type
-                - text
-            description: Text content part
-            example:
-                type: text
-                text: Hello, world!
-        ChatContentImage:
-            type: object
-            properties:
-                type:
-                    type: string
-                    enum:
-                        - image_url
-                image_url:
-                    type: object
-                    properties:
-                        url:
-                            type: string
-                            description: 'URL of the image (data: URLs supported)'
-                        detail:
-                            type: string
-                            enum:
-                                - auto
-                                - low
-                                - high
-                            description: Image detail level for vision models
-                            x-speakeasy-unknown-values: allow
-                    required:
-                        - url
-            required:
-                - type
-                - image_url
-            description: Image content part for vision models
-            example:
-                type: image_url
-                image_url:
-                    url: https://example.com/image.jpg
-                    detail: auto
-        ChatContentAudio:
-            type: object
-            properties:
-                type:
-                    type: string
-                    enum:
-                        - input_audio
-                input_audio:
-                    type: object
-                    properties:
-                        data:
-                            type: string
-                            description: Base64 encoded audio data
-                        format:
-                            type: string
-                            description: >-
-                                Audio format (e.g., wav, mp3, flac, m4a, ogg, aiff, aac, pcm16, pcm24). Supported formats vary by provider.
-                    required:
-                        - data
-                        - format
-            required:
-                - type
-                - input_audio
-            description: Audio input content part. Supported audio formats vary by provider.
-            example:
-                type: input_audio
-                input_audio:
-                    data: SGVsbG8gV29ybGQ=
-                    format: wav
-        ChatContentVideo:
-            type: object
-            properties:
-                type:
-                    type: string
-                    enum:
-                        - video_url
-                video_url:
-                    $ref: '#/components/schemas/ChatContentVideoInput'
-            required:
-                - type
-                - video_url
-            description: Video input content part
-            example:
-                type: video_url
-                video_url:
-                    url: https://example.com/video.mp4
-        ChatFunctionTool:
-            anyOf:
-                - type: object
-                  properties:
-                    type:
-                        type: string
-                        enum:
-                            - function
-                    function:
-                        type: object
-                        properties:
-                            name:
-                                type: string
-                                maxLength: 64
-                                description: Function name (a-z, A-Z, 0-9, underscores, dashes, max 64 chars)
-                                example: get_weather
-                            description:
-                                type: string
-                                description: Function description for the model
-                                example: Get the current weather for a location
-                            parameters:
-                                type: object
-                                additionalProperties:
-                                    nullable: true
-                                description: Function parameters as JSON Schema object
-                                example:
-                                    type: object
-                                    properties:
-                                        location:
-                                            type: string
-                                            description: City name
-                                    required:
-                                        - location
-                            strict:
-                                type: boolean
-                                nullable: true
-                                description: Enable strict schema adherence
-                                example: false
-                        required:
-                            - name
-                        description: Function definition for tool calling
-                        example:
-                            name: get_weather
-                            description: Get the current weather for a location
-                            parameters:
-                                type: object
-                                properties:
-                                    location:
-                                        type: string
-                                        description: City name
-                                required:
-                                    - location
-                    cache_control:
-                        $ref: '#/components/schemas/ChatContentCacheControl'
-                  required:
-                    - type
-                    - function
-                - $ref: '#/components/schemas/DatetimeServerTool'
-                - $ref: '#/components/schemas/ChatWebSearchServerTool'
-                - $ref: '#/components/schemas/ChatWebSearchShorthand'
-            description: Tool definition for function calling (regular function or OpenRouter built-in server tool)
-            example:
-                type: function
-                function:
-                    name: get_weather
-                    description: Get the current weather for a location
-                    parameters:
-                        type: object
-                        properties:
-                            location:
-                                type: string
-                                description: City name
-                            unit:
-                                type: string
-                                enum:
-                                    - celsius
-                                    - fahrenheit
-                                x-speakeasy-unknown-values: allow
-                        required:
-                            - location
-        ChatToolChoice:
-            anyOf:
-                - type: string
-                  enum:
-                    - none
-                - type: string
-                  enum:
-                    - auto
-                - type: string
-                  enum:
-                    - required
-                - $ref: '#/components/schemas/ChatNamedToolChoice'
-            description: Tool choice configuration
-            example: auto
-        ChatToolCall:
-            type: object
-            properties:
-                id:
-                    type: string
-                    description: Tool call identifier
-                type:
-                    type: string
-                    enum:
-                        - function
-                function:
-                    type: object
-                    properties:
-                        name:
-                            type: string
-                            description: Function name to call
-                        arguments:
-                            type: string
-                            description: Function arguments as JSON string
-                    required:
-                        - name
-                        - arguments
-            required:
-                - id
-                - type
-                - function
-            description: Tool call made by the assistant
-            example:
-                id: call_abc123
-                type: function
-                function:
-                    name: get_current_weather
-                    arguments: '{"location": "Boston, MA"}'
-        ChatFinishReasonEnum:
-            type: string
-            enum:
-                - tool_calls
-                - stop
-                - length
-                - content_filter
-                - error
-            example: stop
-            x-speakeasy-unknown-values: allow
-        ChatNamedToolChoice:
-            type: object
-            properties:
-                type:
-                    type: string
-                    enum:
-                        - function
-                function:
-                    type: object
-                    properties:
-                        name:
-                            type: string
-                            description: Function name to call
-                            example: get_weather
-                    required:
-                        - name
-            required:
-                - type
-                - function
-            description: Named tool choice for specific function
-            example:
-                type: function
-                function:
-                    name: get_weather
-        ChatContentVideoInput:
-            type: object
-            properties:
-                url:
-                    type: string
-                    description: 'URL of the video (data: URLs supported)'
-            required:
-                - url
-            description: Video input object
-        ChatContentFile:
-            type: object
-            properties:
-                type:
-                    type: string
-                    enum:
-                        - file
-                file:
-                    type: object
-                    properties:
-                        file_data:
-                            type: string
-                            description: File content as base64 data URL or URL
-                        file_id:
-                            type: string
-                            description: File ID for previously uploaded files
-                        filename:
-                            type: string
-                            description: Original filename
-            required:
-                - type
-                - file
-            description: File content part for document processing
-            example:
-                type: file
-                file:
-                    file_data: https://example.com/document.pdf
-                    filename: document.pdf
-        ChatAssistantMessage:
-            type: object
-            properties:
-                role:
-                    type: string
-                    enum:
-                        - assistant
-                content:
-                    anyOf:
-                        - type: string
-                        - type: array
-                          items:
-                            $ref: '#/components/schemas/ChatContentItems'
-                        - nullable: true
-                    description: Assistant message content
-                name:
-                    type: string
-                    description: Optional name for the assistant
-                tool_calls:
-                    type: array
-                    items:
-                        $ref: '#/components/schemas/ChatToolCall'
-                    description: Tool calls made by the assistant
-                refusal:
-                    type: string
-                    nullable: true
-                    description: Refusal message if content was refused
-                reasoning:
-                    type: string
-                    nullable: true
-                    description: Reasoning output
-                reasoning_details:
-                    $ref: '#/components/schemas/ChatReasoningDetails'
-                images:
-                    $ref: '#/components/schemas/ChatAssistantImages'
-                audio:
-                    $ref: '#/components/schemas/ChatAudioOutput'
-            required:
-                - role
-            description: Assistant message for requests and responses
-            example:
-                role: assistant
-                content: The capital of France is Paris.
-        ChatAssistantImages:
-            type: array
-            items:
-                type: object
-                properties:
-                    image_url:
-                        type: object
-                        properties:
-                            url:
-                                type: string
-                                description: URL or base64-encoded data of the generated image
-                        required:
-                            - url
-                required:
-                    - image_url
-            description: Generated images from image generation models
-            example:
-                - image_url:
-                    url: data:image/png;base64,iVBORw0KGgo...
-        ChatAudioOutput:
-            type: object
-            properties:
-                id:
-                    type: string
-                    description: Audio output identifier
-                expires_at:
-                    type: number
-                    description: Audio expiration timestamp
-                data:
-                    type: string
-                    description: Base64 encoded audio data
-                transcript:
-                    type: string
-                    description: Audio transcript
-            description: Audio output data or reference
-            example:
-                id: audio_abc123
-                expires_at: 1677652400
-                data: UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1f
-                transcript: Hello! How can I help you today?
-        ChatUsage:
-            type: object
-            properties:
-                completion_tokens:
-                    type: number
-                    description: Number of tokens in the completion
-                prompt_tokens:
-                    type: number
-                    description: Number of tokens in the prompt
-                total_tokens:
-                    type: number
-                    description: Total number of tokens
-                completion_tokens_details:
-                    type: object
-                    nullable: true
-                    properties:
-                        reasoning_tokens:
-                            type: number
-                            nullable: true
-                            description: Tokens used for reasoning
-                        audio_tokens:
-                            type: number
-                            nullable: true
-                            description: Tokens used for audio output
-                        accepted_prediction_tokens:
-                            type: number
-                            nullable: true
-                            description: Accepted prediction tokens
-                        rejected_prediction_tokens:
-                            type: number
-                            nullable: true
-                            description: Rejected prediction tokens
-                    description: Detailed completion token usage
-                prompt_tokens_details:
-                    type: object
-                    nullable: true
-                    properties:
-                        cached_tokens:
-                            type: number
-                            description: Cached prompt tokens
-                        cache_write_tokens:
-                            type: number
-                            description: Tokens written to cache. Only returned for models with explicit caching and cache write pricing.
-                        audio_tokens:
-                            type: number
-                            description: Audio input tokens
-                        video_tokens:
-                            type: number
-                            description: Video input tokens
-                    description: Detailed prompt token usage
-            required:
-                - completion_tokens
-                - prompt_tokens
-                - total_tokens
-            description: Token usage statistics
-            example:
-                completion_tokens: 15
-                prompt_tokens: 10
-                total_tokens: 25
-                completion_tokens_details:
-                    reasoning_tokens: 5
-                prompt_tokens_details:
-                    cached_tokens: 2
-    parameters:
-        AppIdentifier:
-            name: HTTP-Referer
-            in: header
-            schema:
-                type: string
-            description: |
-                The app identifier should be your app's URL and is used as the primary identifier for rankings.
-                This is used to track API usage per application.
-        AppDisplayName:
-            name: X-OpenRouter-Title
-            in: header
-            schema:
-                type: string
-            description: |
-                The app display name allows you to customize how your app appears in OpenRouter's dashboard.
-        AppCategories:
-            name: X-OpenRouter-Categories
-            in: header
-            schema:
-                type: string
-            description: |
-                Comma-separated list of app categories (e.g. "cli-agent,cloud-agent"). Used for marketplace rankings.
-    securitySchemes:
-        apiKey:
-            type: http
-            scheme: bearer
-            description: API key as bearer token in Authorization header
-        bearer:
-            type: http
-            scheme: bearer
-            description: API key as bearer token in Authorization header
+  - url: http://localhost:8080
 paths:
-    /chat/completions:
-        post:
-            x-speakeasy-group: chat
-            x-speakeasy-name-override: send
-            x-speakeasy-stream-request-field: stream
-            tags:
-                - Chat
-            summary: Create a chat completion
-            operationId: sendChatCompletionRequest
-            description: >-
-                Sends a request for a model response for the given chat conversation. Supports both streaming and non-streaming modes.
-            requestBody:
-                content:
-                    application/json:
-                        schema:
-                            $ref: '#/components/schemas/ChatRequest'
-                required: true
-            responses:
-                '200':
-                    description: Successful chat completion response
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ChatResult'
-                        text/event-stream:
-                            schema:
-                                type: object
-                                properties:
-                                    data:
-                                        $ref: '#/components/schemas/ChatStreamChunk'
-                                required:
-                                    - data
-                            x-speakeasy-sse-sentinel: '[DONE]'
-                '400':
-                    description: Bad Request - Invalid request parameters or malformed input
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/BadRequestResponse'
-                '401':
-                    description: Unauthorized - Authentication required or invalid credentials
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/UnauthorizedResponse'
-                '402':
-                    description: Payment Required - Insufficient credits or quota to complete request
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/PaymentRequiredResponse'
-                '404':
-                    description: Not Found - Resource does not exist
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/NotFoundResponse'
-                '408':
-                    description: Request Timeout - Operation exceeded time limit
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/RequestTimeoutResponse'
-                '413':
-                    description: Payload Too Large - Request payload exceeds size limits
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/PayloadTooLargeResponse'
-                '422':
-                    description: Unprocessable Entity - Semantic validation failure
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/UnprocessableEntityResponse'
-                '429':
-                    description: Too Many Requests - Rate limit exceeded
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/TooManyRequestsResponse'
-                '500':
-                    description: Internal Server Error - Unexpected server error
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/InternalServerResponse'
-                '502':
-                    description: Bad Gateway - Provider/upstream API failure
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/BadGatewayResponse'
-                '503':
-                    description: Service Unavailable - Service temporarily unavailable
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ServiceUnavailableResponse'
-                '524':
-                    description: Infrastructure Timeout - Request timed out at our edge network
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/EdgeNetworkTimeoutResponse'
-                '529':
-                    description: Provider Overloaded - Provider is temporarily overloaded
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/ProviderOverloadedResponse'
+  /api/v1/chat/completions:
+    post:
+      summary: Create a chat completion
+      description: |
+        Supports `#CHAIN:` and `#CHAIN_STEPn:` directives in system messages.
+        `#CHAIN_STEPn:` enables multi-round tool testing where the client executes
+        real tools and sends `role=tool` messages back to continue the flow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Chat completion or SSE stream
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/models:
+    get:
+      summary: List available mock models
+      responses:
+        '200':
+          description: Model list
+  /fault-presets:
+    get:
+      summary: List available fault presets
+      responses:
+        '200':
+          description: Fault preset list
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service health
+components:
+  schemas:
+    ChatRequest:
+      type: object
+      required:
+        - messages
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        model:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+        stream:
+          type: boolean
+        stream_options:
+          $ref: '#/components/schemas/ChatStreamOptions'
+        temperature:
+          type: number
+        top_p:
+          type: number
+        max_completion_tokens:
+          type: integer
+        max_tokens:
+          type: integer
+        reasoning:
+          $ref: '#/components/schemas/ChatReasoningConfig'
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatFunctionTool'
+        tool_choice:
+          description: Tool choice strategy passed through by the client.
+        stop:
+          description: Stop sequence configuration.
+        seed:
+          type: integer
+        frequency_penalty:
+          type: number
+        presence_penalty:
+          type: number
+        logit_bias:
+          type: object
+          additionalProperties:
+            type: number
+        logprobs:
+          type: boolean
+        top_logprobs:
+          type: integer
+        user:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        parallel_tool_calls:
+          type: boolean
+        modalities:
+          type: array
+          items:
+            type: string
+        session_id:
+          type: string
+        service_tier:
+          type: string
+        debug:
+          $ref: '#/components/schemas/ChatDebugOptions'
+    ChatDebugOptions:
+      type: object
+      properties:
+        deterministic:
+          type: boolean
+          description: Make generated ids deterministic when used with `seed`.
+        chain_trace:
+          type: boolean
+          description: Emit selected chain-step trace information via response headers.
+    ChatReasoningConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        effort:
+          type: string
+        max_tokens:
+          type: integer
+        exclude:
+          type: boolean
+        summary:
+          description: Provider-specific reasoning summary configuration.
+    ChatStreamOptions:
+      type: object
+      properties:
+        include_usage:
+          type: boolean
+    ChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          description: String or provider-specific structured content.
+        name:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatToolCall'
+        tool_call_id:
+          type: string
+        reasoning:
+          type: string
+        refusal:
+          type: string
+    ChatFunctionTool:
+      type: object
+      required:
+        - type
+        - function
+      properties:
+        type:
+          type: string
+          enum: [function]
+        function:
+          $ref: '#/components/schemas/FunctionDefinition'
+    FunctionDefinition:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
         parameters:
-            - $ref: "#/components/parameters/AppIdentifier"
-            - $ref: "#/components/parameters/AppDisplayName"
-            - $ref: "#/components/parameters/AppCategories"
-tags:
-    - name: API Keys
-      description: API key management endpoints
-    - name: Analytics
-      description: Analytics and usage endpoints
-    - name: Anthropic Messages
-      description: Anthropic Messages endpoints
-    - name: Chat
-      description: Chat completion endpoints
-    - name: Credits
-      description: Credit management endpoints
-    - name: Embeddings
-      description: Text embedding endpoints
-    - name: Endpoints
-      description: Endpoint information
-    - name: Generations
-      description: Generation history endpoints
-    - name: Guardrails
-      description: Guardrails endpoints
-    - name: Models
-      description: Model information endpoints
-    - name: OAuth
-      description: OAuth authentication endpoints
-    - name: Providers
-      description: Provider information endpoints
-    - name: beta.responses
-      description: beta.responses endpoints
-x-fern-base-path: /
-x-retry-strategy:
-    type: exponential
-    initialDelay: 500
-    maxDelay: 60000
-    maxAttempts: 3
-x-speakeasy-globals:
-    parameters:
-        - $ref: "#/components/parameters/AppIdentifier"
-        - $ref: "#/components/parameters/AppDisplayName"
-        - $ref: "#/components/parameters/AppCategories"
+          description: JSON Schema for function arguments.
+        strict:
+          type: boolean
+    ChatResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatChoice'
+        usage:
+          $ref: '#/components/schemas/ChatUsage'
+        system_fingerprint:
+          type: string
+        service_tier:
+          type: string
+    ChatChoice:
+      type: object
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: '#/components/schemas/ChatMessage'
+        finish_reason:
+          type: string
+          enum: [tool_calls, stop, length, content_filter, error]
+    ChatToolCall:
+      type: object
+      required:
+        - id
+        - type
+        - function
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [function]
+        function:
+          $ref: '#/components/schemas/FunctionCall'
+    FunctionCall:
+      type: object
+      required:
+        - name
+        - arguments
+      properties:
+        name:
+          type: string
+        arguments:
+          type: string
+    ChatUsage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        prompt_tokens_details:
+          $ref: '#/components/schemas/PromptTokensDetails'
+        completion_tokens_details:
+          $ref: '#/components/schemas/CompletionTokensDetails'
+    PromptTokensDetails:
+      type: object
+      properties:
+        cached_tokens:
+          type: integer
+        cache_write_tokens:
+          type: integer
+        audio_tokens:
+          type: integer
+        video_tokens:
+          type: integer
+    CompletionTokensDetails:
+      type: object
+      properties:
+        reasoning_tokens:
+          type: integer
+        audio_tokens:
+          type: integer
+        accepted_prediction_tokens:
+          type: integer
+        rejected_prediction_tokens:
+          type: integer
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+            code:
+              type: string

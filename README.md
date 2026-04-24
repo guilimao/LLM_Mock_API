@@ -1,125 +1,247 @@
 # LLM Mock API Server
 
-基于OpenRouter API规范的Go语言Mock服务器，支持流式传输、思考模式、工具调用和故障模拟。
+基于 OpenAI/OpenRouter 风格请求结构的 Go 语言 Mock 服务，支持流式输出、Reasoning、工具调用编排、多轮 tool round-trip 和故障注入。
 
 ## 功能特性
 
-- ✅ **流式传输** - 支持SSE (Server-Sent Events) 流式响应
-- ✅ **思考模式** - 模拟Reasoning Enabled/Disabled
-- ✅ **工具调用** - 支持模拟工具调用测试
-- ✅ **多模态输出** - 支持图片、音频输出
-- ✅ **对话链条** - 通过system_prompt精细控制服务端输出
-- ✅ **故障模拟** - 支持延迟、中断、丢包、JSON损坏等故障
-- ✅ **并发执行** - 支持并行工具调用
+- 支持 SSE 流式输出
+- 支持 reasoning enabled / excluded 模式
+- 支持通过 `#CHAIN` / `#CHAIN_STEPn` 精确控制返回内容
+- 支持由 Mock API 产出 `tool_calls`，由测试端执行真实工具
+- 支持多轮 `assistant -> tool -> assistant` 回环测试
+- 支持故障模拟
 
 ## 快速开始
 
 ### 1. 安装依赖
 
 ```bash
-cd LLM_Mock_API
 go mod tidy
 ```
 
-### 2. 启动服务器
+### 2. 启动服务
 
 ```bash
 go run .
-# 或指定端口
+
+# 或指定参数
 go run . -port=8080 -debug=true
 ```
 
-### 3. 测试API
+### 3. 基础请求
 
 ```bash
-# 健康检查
 curl http://localhost:8080/health
 
-# 简单对话
 curl -X POST http://localhost:8080/api/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"Hello"}]}'
-
-# 流式响应
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'
 ```
 
 ## API 端点
 
-| 端点 | 方法 | 描述 |
+| 端点 | 方法 | 说明 |
 |------|------|------|
 | `/api/v1/chat/completions` | POST | 对话补全 |
 | `/api/v1/models` | GET | 列出可用模型 |
-| `/test-tools` | GET | 列出测试工具 |
-| `/test-tools/{name}/invoke` | POST | 调用测试工具 |
 | `/fault-presets` | GET | 列出故障预设 |
 | `/health` | GET | 健康检查 |
 
-## 对话链条语法
+说明：
 
-在system消息中使用`#CHAIN:`指令定义对话流程：
+## 对话链语法
 
-### 基础语法
+通过 system message 中的链指令控制响应。
 
+### 单阶段
+
+```text
+#CHAIN: reasoning-content-tool_calls
 ```
-#CHAIN: node1-node2-node3, node4, node5-node6
+
+### 多阶段
+
+```text
+#CHAIN_STEP1: tool_calls{name=get_weather,args={"location":"Shanghai"}}
+#CHAIN_STEP2: content{text=Tool results received}
 ```
 
-- `-` 分隔顺序执行的节点
-- `,` 分隔可并发的段落
-- `parallel:` 前缀表示并发节点
+### 规则
+
+- `-` 表示同一阶段内顺序节点
+- `,` 表示并发分段
+- `parallel:` 表示并发节点
+- `#CHAIN:` 等价于 `#CHAIN_STEP1:`
+- 当消息历史中没有已完成的 tool round 时，命中 `STEP1`
+- 已完成 1 轮 tool round 时，命中 `STEP2`
+- 已完成 2 轮 tool round 时，命中 `STEP3`
+- 若目标阶段不存在，回退到最后一个已定义阶段
 
 ### 节点类型
 
 | 类型 | 说明 | 示例 |
 |------|------|------|
-| `reasoning` | 思考内容 | `reasoning{text=分析中...}` |
-| `content` | 普通文本 | `content{text=你好}` |
-| `tool_calls` | 工具调用 | `tool_calls{name=func,args={}}` |
-| `mixed` | 混合类型 | `mixed{reasoning=...,content=...}` |
-| `image` | 图片 | `image{url=...}` |
-| `audio` | 音频 | `audio{data=...}` |
+| `reasoning` | reasoning 文本 | `reasoning{text=Let me think}` |
+| `content` | 普通文本 | `content{text=Hello}` |
+| `tool_calls` | 工具调用 | `tool_calls{name=get_weather,args={"location":"Shanghai"}}` |
+| `mixed` | reasoning + content | `mixed{reasoning=...,content=...}` |
+| `image` | 图片占位输出 | `image{url=https://example.com/a.png}` |
+| `audio` | 音频占位输出 | `audio{data=...}` |
 
-### 参数
+## 工具调用的新用法
 
-| 参数 | 说明 | 示例 |
-|------|------|------|
-| `text` | 文本内容 | `text=Hello` |
-| `reasoning` | 思考文本 | `reasoning=Let me think` |
-| `char_delay` | 字符延迟 | `char_delay=10ms` |
-| `chunk_size` | 块大小 | `chunk_size=5` |
-| `chunk_delay` | 块延迟 | `chunk_delay=50ms` |
-| `fault` | 故障类型 | `fault=delay` |
-| `fault_prob` | 故障概率 | `fault_prob=0.5` |
+当前推荐的工具测试流程：
 
-### 示例链条
+1. 客户端在请求中声明真实 `tools`
+2. system prompt 使用 `#CHAIN_STEP1` 指定需要返回的 `tool_calls`
+3. Mock API 返回标准 OpenAI 风格 `tool_calls`
+4. 客户端执行真实工具
+5. 客户端把结果作为 `role=tool` 消息回传
+6. Mock API 根据 `#CHAIN_STEP2` 继续返回后续内容
 
-```
-#CHAIN: reasoning-content-tool_calls
-#CHAIN: reasoning{text=Step 1}-content{text=Result 1}-reasoning{text=Step 2}-content{text=Result 2}
-#CHAIN: tool_calls{name=get_weather,args={"loc":"NYC"}}, content{text=Done}
-#CHAIN: reasoning, parallel:tool_calls, content
-#CHAIN: content{fault=delay,fault_duration=2s}
+### `tool_calls` 参数规则
+
+首个工具调用：
+
+```text
+tool_calls{name=get_weather,args={"location":"Shanghai"}}
 ```
 
-## 思考模式 (Reasoning)
+多个工具调用：
 
-支持 OpenRouter 最佳实践的推理配置，兼容 OpenAI 和 Anthropic 两种风格：
+```text
+tool_calls{
+  id=call_weather_1,
+  name=get_weather,
+  args={"location":"Shanghai"},
+  id2=call_search_1,
+  name2=search,
+  args2={"query":"weather shanghai"}
+}
+```
 
-### 配置选项
+规则说明：
 
-| 参数 | 类型 | 说明 | 示例 |
-|------|------|------|------|
-| `enabled` | boolean | 显式启用/禁用推理 | `true` |
-| `effort` | string | OpenAI风格: xhigh/high/medium/low/minimal/none | `"high"` |
-| `max_tokens` | integer | Anthropic风格: 推理token限制 | `2000` |
-| `exclude` | boolean | 从响应中排除推理内容(仅统计) | `false` |
+- `name` 和 `args` 必填
+- `id` 可选；不填时服务端自动生成
+- 第二个及之后的工具调用使用 `name2` / `args2` / `id2`、`name3` / `args3` / `id3`
+- `args` 必须是合法 JSON
+- 服务端不会根据 `tools` 自动推断参数，只按 `CHAIN` 显式定义返回
+- 即使 `CHAIN` 中的工具名与请求 `tools` 不一致，也不会拦截；若开启 trace，会通过响应头暴露 mismatch
 
-**注意**: `effort` 和 `max_tokens` 不能同时使用，只能二选一。
+### 多轮 round-trip 示例
 
-### 示例 1: OpenAI 风格 (effort)
+第一轮：请求模型产出工具调用
+
+```bash
+curl -X POST http://localhost:8080/api/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [
+      {
+        "role": "system",
+        "content": "#CHAIN_STEP1: tool_calls{name=get_weather,args={\"location\":\"Shanghai\"}}\n#CHAIN_STEP2: content{text=Tool results received.}"
+      },
+      {
+        "role": "user",
+        "content": "What is the weather?"
+      }
+    ],
+    "stream": true,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get weather information"
+        }
+      }
+    ]
+  }'
+```
+
+第二轮：客户端执行真实工具后把结果传回
+
+```bash
+curl -X POST http://localhost:8080/api/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [
+      {
+        "role": "system",
+        "content": "#CHAIN_STEP1: tool_calls{name=get_weather,args={\"location\":\"Shanghai\"}}\n#CHAIN_STEP2: content{text=Tool results received.}"
+      },
+      {
+        "role": "user",
+        "content": "What is the weather?"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\":\"Shanghai\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "{\"temperature\":26,\"condition\":\"sunny\"}"
+      }
+    ]
+  }'
+```
+
+## Debug 与可复现能力
+
+`ChatRequest.debug` 当前支持：
+
+```json
+{
+  "debug": {
+    "deterministic": true,
+    "chain_trace": true
+  },
+  "seed": 7
+}
+```
+
+### `deterministic`
+
+开启后，若请求带 `seed`，以下内容会稳定：
+
+- response id
+- 自动生成的 tool call id
+- created 时间戳
+
+适合做快照测试、回归测试。
+
+### `chain_trace`
+
+开启后，服务端会通过响应头返回链路选择信息：
+
+- `X-Mock-Chain-Step`
+- `X-Mock-Chain-Fallback`
+- `X-Mock-Tool-Mismatch`
+
+说明：
+
+- 不会污染标准响应 JSON
+- 适合调试当前命中了哪个阶段、是否发生阶段回退、是否存在工具声明不一致
+
+## Reasoning
+
+支持两种风格：
+
+- OpenAI 风格：`reasoning.effort`
+- Anthropic 风格：`reasoning.max_tokens`
+
+### 示例 1：effort
 
 ```json
 {
@@ -131,7 +253,7 @@ curl -X POST http://localhost:8080/api/v1/chat/completions \
 }
 ```
 
-### 示例 2: Anthropic 风格 (max_tokens)
+### 示例 2：max_tokens
 
 ```json
 {
@@ -143,9 +265,7 @@ curl -X POST http://localhost:8080/api/v1/chat/completions \
 }
 ```
 
-### 示例 3: 排除推理内容 (仅统计)
-
-当 `exclude: true` 时，推理 tokens 仍会生成并计入 usage，但不会出现在响应内容中：
+### 示例 3：exclude
 
 ```json
 {
@@ -158,94 +278,45 @@ curl -X POST http://localhost:8080/api/v1/chat/completions \
 }
 ```
 
-响应示例：
-```json
-{
-  "choices": [{
-    "message": {
-      "content": "The answer is 42.",
-      "reasoning": ""  // 推理内容被排除
-    }
-  }],
-  "usage": {
-    "completion_tokens": 150,
-    "completion_tokens_details": {
-      "reasoning_tokens": 100  // 但统计中仍包含推理tokens
-    }
-  }
-}
-```
+`exclude=true` 时：
 
-### 示例 4: 显式启用/禁用
+- reasoning token 仍计入 usage
+- reasoning 内容不出现在响应 message 中
 
-```json
-{
-  "reasoning": {
-    "enabled": true,
-    "effort": "medium"
-  }
-}
-```
+## 故障注入
 
-```json
-{
-  "reasoning": {
-    "enabled": false
-  }
-}
-```
-
-## 工具调用
-
-测试工具规范支持客户端实现模拟工具调用：
-
-```bash
-# 列出工具
-curl http://localhost:8080/test-tools
-
-# 调用工具
-curl -X POST http://localhost:8080/test-tools/get_weather/invoke \
-  -H 'Content-Type: application/json' \
-  -d '{"location": "Beijing", "unit": "celsius"}'
-```
-
-可用工具：
-- `get_weather` - 获取天气
-- `calculate` - 数学计算
-- `search` - 搜索
-- `generate_image` - 生成图片
-
-## 故障模拟
-
-### 故障类型
+### 支持的故障类型
 
 | 类型 | 说明 |
 |------|------|
 | `delay` | 延迟 |
-| `interrupt` | 连接中断 |
+| `interrupt` | 中断 |
 | `packet_loss` | 丢包 |
 | `corruption` | 数据损坏 |
-| `partial_json` | JSON截断 |
-| `malformed_json` | 畸形JSON |
+| `partial_json` | JSON 截断 |
+| `malformed_json` | 畸形 JSON |
 | `timeout` | 超时 |
 
-### 使用故障预设
+### 查询预设
 
 ```bash
 curl http://localhost:8080/fault-presets
 ```
 
-### 在对话中注入故障
+### 在链中注入故障
 
 ```json
 {
-  "messages": [{
-    "role": "system",
-    "content": "#CHAIN: content{fault=delay,fault_duration=3s}"
-  }, {
-    "role": "user",
-    "content": "Hello"
-  }],
+  "messages": [
+    {
+      "role": "system",
+      "content": "#CHAIN: content{fault=delay,fault_duration=3s,text=Delayed response}"
+    },
+    {
+      "role": "user",
+      "content": "Hello"
+    }
+  ],
   "stream": true
 }
 ```
@@ -263,7 +334,7 @@ curl -X POST http://localhost:8080/api/v1/chat/completions \
   }'
 ```
 
-### 2. 带思考的流式对话
+### 2. 带 reasoning 的流式对话
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/chat/completions \
@@ -275,60 +346,77 @@ curl -X POST http://localhost:8080/api/v1/chat/completions \
   }'
 ```
 
-### 3. 自定义对话链条
+### 3. 自定义单阶段 CHAIN
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "messages": [{
-      "role": "system",
-      "content": "#CHAIN: reasoning{text=Let me calculate}-content{text=The answer is 4}"
-    }, {
-      "role": "user",
-      "content": "2+2=?"
-    }],
+    "messages": [
+      {
+        "role": "system",
+        "content": "#CHAIN: reasoning{text=Let me calculate}-content{text=The answer is 4}"
+      },
+      {
+        "role": "user",
+        "content": "2+2=?"
+      }
+    ],
     "stream": true
   }'
 ```
 
-### 4. 带工具调用的对话
+### 4. staged tool round-trip
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "messages": [{
-      "role": "system",
-      "content": "#CHAIN: content-tool_calls-reasoning-content"
-    }, {
-      "role": "user",
-      "content": "What's the weather in Beijing?"
-    }],
-    "stream": true,
-    "tools": [{
-      "type": "function",
-      "function": {
-        "name": "get_weather",
-        "description": "Get weather"
+    "messages": [
+      {
+        "role": "system",
+        "content": "#CHAIN_STEP1: tool_calls{name=get_weather,args={\"location\":\"Shanghai\"}}\n#CHAIN_STEP2: content{text=The tool result has been consumed.}"
+      },
+      {
+        "role": "user",
+        "content": "What is the weather?"
       }
-    }]
+    ],
+    "stream": true,
+    "debug": {
+      "deterministic": true,
+      "chain_trace": true
+    },
+    "seed": 7,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get weather"
+        }
+      }
+    ]
   }'
 ```
 
-### 5. 并发工具调用
+### 5. 并行工具调用
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "messages": [{
-      "role": "system",
-      "content": "#CHAIN: reasoning, parallel:tool_calls, content"
-    }, {
-      "role": "user",
-      "content": "Get weather and calculate"
-    }],
+    "messages": [
+      {
+        "role": "system",
+        "content": "#CHAIN: tool_calls{name=get_weather,args={\"location\":\"Shanghai\"},name2=search,args2={\"query\":\"weather shanghai\"}}"
+      },
+      {
+        "role": "user",
+        "content": "Use tools"
+      }
+    ],
+    "parallel_tool_calls": true,
     "stream": true
   }'
 ```
@@ -339,109 +427,33 @@ curl -X POST http://localhost:8080/api/v1/chat/completions \
 curl -X POST http://localhost:8080/api/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "messages": [{
-      "role": "system",
-      "content": "#CHAIN: content{fault=interrupt,fault_prob=0.5}"
-    }, {
-      "role": "user",
-      "content": "Hello"
-    }],
+    "messages": [
+      {
+        "role": "system",
+        "content": "#CHAIN: content{fault=interrupt,fault_prob=0.5}"
+      },
+      {
+        "role": "user",
+        "content": "Test interruption"
+      }
+    ],
     "stream": true
   }'
 ```
 
-### 7. 慢速传输
+## 测试
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "messages": [{
-      "role": "system",
-      "content": "#CHAIN: content{char_delay=100ms,chunk_size=1,text=Slow response}"
-    }, {
-      "role": "user",
-      "content": "Hello"
-    }],
-    "stream": true
-  }'
-```
-
-### 8. JSON损坏测试
-
-```bash
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "messages": [{
-      "role": "system",
-      "content": "#CHAIN: content{fault=malformed_json,fault_prob=1.0}"
-    }, {
-      "role": "user",
-      "content": "Hello"
-    }],
-    "stream": true
-  }'
-```
-
-### 9. OpenRouter 风格推理配置 (exclude)
-
-```bash
-# 推理内容被生成但不包含在响应中（仅用于统计）
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "messages": [{"role": "user", "content": "Explain quantum computing"}],
-    "reasoning": {
-      "effort": "high",
-      "exclude": true
-    },
-    "stream": true
-  }'
-```
-
-### 10. Anthropic 风格推理配置 (max_tokens)
-
-```bash
-# 使用 max_tokens 而不是 effort (Anthropic风格)
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "messages": [{"role": "user", "content": "Analyze this complex problem"}],
-    "reasoning": {
-      "max_tokens": 2000,
-      "exclude": false
-    },
-    "stream": true
-  }'
-```
-
-## 项目结构
-
-```
-LLM_Mock_API/
-├── main.go        # 入口程序
-├── models.go      # 数据模型
-├── chain.go       # 对话链条解析
-├── stream.go      # 流式处理
-├── failure.go     # 故障模拟
-├── handler.go     # HTTP处理器
-├── go.mod         # Go模块
-└── README.md      # 说明文档
+go test ./...
 ```
 
 ## 命令行参数
 
-```bash
-go run . [options]
-
-Options:
-  -host string    Server host (default "localhost")
-  -port string    Server port (default "8080")
-  -model string   Default model name (default "mock/llm-model")
-  -debug bool     Enable debug mode (default false)
+```text
+-port string     Server port (default "8080")
+-host string     Server host (default "localhost")
+-model string    Default model name (default "mock/llm-model")
+-debug           Enable debug mode
+-log-dir string  Directory for request logs (default "./logs")
+-no-log          Disable request logging
 ```
-
-## 许可证
-
-MIT License

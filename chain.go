@@ -220,52 +220,46 @@ func (p *ChainParser) parseToolCallsNode(params map[string]string) (*ChainNode, 
 		ToolCalls: []SimulatedToolCall{},
 	}
 
-	// Parse tool calls from parameters
-	// Format: tool1=func_name, args={"key":"value"}
-	toolCount := 1
-	for {
-		toolKey := fmt.Sprintf("tool%d", toolCount)
-		name := getParam(params, toolKey, "")
-		if name == "" && toolCount == 1 {
-			// Try default tool
-			name = getParam(params, "name", "get_weather")
+	for toolCount := 1; ; toolCount++ {
+		suffix := strconv.Itoa(toolCount)
+		name := getIndexedParam(params, "name", suffix)
+		if name == "" {
+			name = getIndexedParam(params, "tool", suffix)
+		}
+		if toolCount == 1 && name == "" {
+			name = strings.TrimSpace(getParam(params, "name", ""))
+			if name == "" {
+				name = strings.TrimSpace(getParam(params, "tool", ""))
+			}
 		}
 		if name == "" {
+			if toolCount == 1 {
+				return nil, fmt.Errorf("tool_calls requires at least one tool name")
+			}
 			break
 		}
 
-		argsKey := fmt.Sprintf("args%d", toolCount)
-		argsStr := getParam(params, argsKey, `{}`)
-		if argsStr == `{}` && toolCount == 1 {
-			argsStr = getParam(params, "args", `{"location":"Beijing"}`)
+		argsStr := getIndexedParam(params, "args", suffix)
+		if toolCount == 1 && argsStr == "" {
+			argsStr = getParam(params, "args", "")
+		}
+		if argsStr == "" {
+			return nil, fmt.Errorf("tool '%s' is missing args", name)
+		}
+		if !json.Valid([]byte(argsStr)) {
+			return nil, fmt.Errorf("tool '%s' has invalid args JSON", name)
 		}
 
 		toolCall := SimulatedToolCall{
-			ID:        fmt.Sprintf("call_%s_%d", generateShortID(), toolCount),
+			ID:        getIndexedParam(params, "id", suffix),
 			Name:      name,
 			Arguments: json.RawMessage(argsStr),
 		}
-
-		// Check if there's a result specified
-		resultKey := fmt.Sprintf("result%d", toolCount)
-		if resultStr := getParam(params, resultKey, ""); resultStr != "" {
-			var result interface{}
-			if err := json.Unmarshal([]byte(resultStr), &result); err == nil {
-				toolCall.Result = result
-			}
+		if toolCount == 1 && toolCall.ID == "" {
+			toolCall.ID = getParam(params, "id", "")
 		}
 
 		node.ToolCalls = append(node.ToolCalls, toolCall)
-		toolCount++
-	}
-
-	// If no tools parsed, add a default one
-	if len(node.ToolCalls) == 0 {
-		node.ToolCalls = append(node.ToolCalls, SimulatedToolCall{
-			ID:        "call_" + generateShortID() + "_1",
-			Name:      "get_weather",
-			Arguments: json.RawMessage(`{"location":"Beijing"}`),
-		})
 	}
 
 	// Parse speed parameters
@@ -445,6 +439,10 @@ func getParam(params map[string]string, key, defaultValue string) string {
 	return defaultValue
 }
 
+func getIndexedParam(params map[string]string, key, suffix string) string {
+	return strings.TrimSpace(getParam(params, key+suffix, ""))
+}
+
 // splitTopLevel splits a string by a separator, but only at the top level
 // (not inside braces or brackets)
 func splitTopLevel(s string, sep rune) []string {
@@ -477,15 +475,4 @@ func splitTopLevel(s string, sep rune) []string {
 	}
 
 	return result
-}
-
-// generateShortID generates a short random ID
-func generateShortID() string {
-	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	result := make([]byte, 8)
-	for i := range result {
-		result[i] = charset[time.Now().UnixNano()%int64(len(charset))]
-		time.Sleep(1 * time.Nanosecond)
-	}
-	return string(result)
 }

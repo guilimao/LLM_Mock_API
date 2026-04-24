@@ -1,10 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"math/rand"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,7 +15,6 @@ import (
 type Handler struct {
 	chainParser   *ChainParser
 	streamHandler *StreamHandler
-	testTools     TestToolRegistry
 }
 
 // NewHandler creates a new handler
@@ -23,7 +22,6 @@ func NewHandler(defaultModel string) *Handler {
 	return &Handler{
 		chainParser:   NewChainParser(),
 		streamHandler: NewStreamHandler(defaultModel),
-		testTools:     DefaultTestTools,
 	}
 }
 
@@ -35,11 +33,6 @@ func (h *Handler) RegisterRoutes(router *gin.Engine) {
 		api.POST("/chat/completions", h.ChatCompletions)
 		api.GET("/models", h.ListModels)
 	}
-
-	// Test tool routes
-	router.GET("/test-tools", h.ListTestTools)
-	router.GET("/test-tools/:name", h.GetTestTool)
-	router.POST("/test-tools/:name/invoke", h.InvokeTestTool)
 
 	// Health check
 	router.GET("/health", h.HealthCheck)
@@ -77,9 +70,10 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		model = "mock/llm-model"
 	}
 	h.streamHandler.modelName = model
+	execOpts := NewRequestExecutionOptions(req)
 
 	// Extract chain from system prompt
-	chain, err := h.extractChainFromMessages(req.Messages, reasoningEnabled, reasoningExcluded)
+	chain, trace, err := h.extractChainFromMessages(req, reasoningEnabled, reasoningExcluded, execOpts)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: struct {
@@ -94,17 +88,18 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		})
 		return
 	}
+	h.writeChainTraceHeaders(c, execOpts, trace)
 	// Handle streaming vs non-streaming
 	if req.Stream {
 		// Streaming response
-		err := h.streamHandler.GenerateStream(c, req, chain, reasoningEnabled, reasoningExcluded)
+		err := h.streamHandler.GenerateStream(c, req, chain, reasoningEnabled, reasoningExcluded, execOpts)
 		if err != nil {
 			// If streaming failed mid-way, we can't send JSON error
 			fmt.Printf("Streaming error: %v\n", err)
 		}
 	} else {
 		// Non-streaming response
-		response := h.streamHandler.GenerateNonStream(req, chain, reasoningEnabled, reasoningExcluded)
+		response := h.streamHandler.GenerateNonStream(req, chain, reasoningEnabled, reasoningExcluded, execOpts)
 		c.JSON(http.StatusOK, response)
 	}
 }
@@ -159,36 +154,26 @@ func (h *Handler) getReasoningEffort(req ChatRequest) string {
 }
 
 // extractChainFromMessages extracts the dialogue chain from messages
-func (h *Handler) extractChainFromMessages(messages []ChatMessage, reasoningEnabled bool, reasoningExcluded bool) (*ParsedChain, error) {
-	// Look for system message with chain specification
-	for _, msg := range messages {
-		if msg.Role == "system" {
-			content := h.extractStringContent(msg.Content)
+func (h *Handler) extractChainFromMessages(req ChatRequest, reasoningEnabled bool, reasoningExcluded bool, execOpts *RequestExecutionOptions) (*ParsedChain, ChainSelectionTrace, error) {
+	stepChains := h.extractChainSteps(req.Messages)
+	selectedStep, fallbackUsed := selectChainStep(stepChains, countCompletedToolRounds(req.Messages))
 
-			// Check if content contains chain specification
-			// Chain spec format: #CHAIN: <chain-definition>
-			if idx := strings.Index(content, "#CHAIN:"); idx != -1 {
-				chainStr := strings.TrimSpace(content[idx+7:])
-				// Extract until end of line or comment
-				if nlIdx := strings.IndexAny(chainStr, "\n\r"); nlIdx != -1 {
-					chainStr = chainStr[:nlIdx]
-				}
-				return h.chainParser.Parse(chainStr, reasoningEnabled, reasoningExcluded)
-			}
-
-			// Also check for @chain directive
-			if idx := strings.Index(content, "@chain"); idx != -1 {
-				chainStr := strings.TrimSpace(content[idx+6:])
-				if nlIdx := strings.IndexAny(chainStr, "\n\r"); nlIdx != -1 {
-					chainStr = chainStr[:nlIdx]
-				}
-				return h.chainParser.Parse(chainStr, reasoningEnabled, reasoningExcluded)
-			}
-		}
+	chainStr := ""
+	if selectedStep > 0 {
+		chainStr = stepChains[selectedStep]
 	}
 
-	// Default chain if no specification found
-	return h.chainParser.Parse("", reasoningEnabled, reasoningExcluded)
+	chain, err := h.chainParser.Parse(chainStr, reasoningEnabled, reasoningExcluded)
+	if err != nil {
+		return nil, ChainSelectionTrace{}, err
+	}
+
+	trace := ChainSelectionTrace{
+		SelectedStep: selectedStep,
+		FallbackUsed: fallbackUsed,
+	}
+	trace.ToolMismatch = h.normalizeChainToolCalls(chain, req.Tools, execOpts)
+	return chain, trace, nil
 }
 
 // extractStringContent extracts string content from message content
@@ -246,110 +231,6 @@ func (h *Handler) ListModels(c *gin.Context) {
 	})
 }
 
-// ListTestTools lists available test tools
-func (h *Handler) ListTestTools(c *gin.Context) {
-	c.JSON(http.StatusOK, h.testTools)
-}
-
-// GetTestTool gets a specific test tool specification
-func (h *Handler) GetTestTool(c *gin.Context) {
-	name := c.Param("name")
-	tool, ok := h.testTools.Tools[name]
-	if !ok {
-		c.JSON(http.StatusNotFound, ErrorResponse{
-			Error: struct {
-				Message string `json:"message"`
-				Type    string `json:"type,omitempty"`
-				Code    string `json:"code,omitempty"`
-			}{
-				Message: fmt.Sprintf("Test tool '%s' not found", name),
-				Type:    "not_found",
-				Code:    "404",
-			},
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, tool)
-}
-
-// InvokeTestTool invokes a test tool and returns the result
-func (h *Handler) InvokeTestTool(c *gin.Context) {
-	name := c.Param("name")
-	tool, ok := h.testTools.Tools[name]
-	if !ok {
-		c.JSON(http.StatusNotFound, ErrorResponse{
-			Error: struct {
-				Message string `json:"message"`
-				Type    string `json:"type,omitempty"`
-				Code    string `json:"code,omitempty"`
-			}{
-				Message: fmt.Sprintf("Test tool '%s' not found", name),
-				Type:    "not_found",
-				Code:    "404",
-			},
-		})
-		return
-	}
-
-	// Parse arguments
-	var args map[string]interface{}
-	if err := c.ShouldBindJSON(&args); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error: struct {
-				Message string `json:"message"`
-				Type    string `json:"type,omitempty"`
-				Code    string `json:"code,omitempty"`
-			}{
-				Message: fmt.Sprintf("Invalid arguments: %v", err),
-				Type:    "invalid_request_error",
-				Code:    "400",
-			},
-		})
-		return
-	}
-
-	// Find matching response scenario
-	var response TestToolResponse
-	for _, resp := range tool.Responses {
-		if resp.Scenario == "success" {
-			response = resp
-			break
-		}
-	}
-
-	// Apply latency simulation
-	if tool.Latency != nil {
-		latencyRange := tool.Latency.Max - tool.Latency.Min
-		if latencyRange > 0 {
-			latency := time.Duration(tool.Latency.Min+rand.Intn(latencyRange)) * time.Millisecond
-			time.Sleep(latency)
-		}
-	} else if response.Latency > 0 {
-		time.Sleep(time.Duration(response.Latency) * time.Millisecond)
-	}
-
-	// Return error if configured
-	if response.Error != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": response.Error,
-		})
-		return
-	}
-
-	// Return result
-	var result interface{}
-	if err := json.Unmarshal(response.Result, &result); err != nil {
-		result = response.Result
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"tool":      name,
-		"arguments": args,
-		"result":    result,
-	})
-}
-
 // HealthCheck returns health status
 func (h *Handler) HealthCheck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
@@ -360,10 +241,129 @@ func (h *Handler) HealthCheck(c *gin.Context) {
 			"streaming",
 			"reasoning",
 			"tool_calls",
+			"chain_steps",
 			"multimodal",
 			"fault_simulation",
 		},
 	})
+}
+
+func (h *Handler) extractChainSteps(messages []ChatMessage) map[int]string {
+	steps := map[int]string{}
+	for _, msg := range messages {
+		if msg.Role != "system" {
+			continue
+		}
+
+		content := h.extractStringContent(msg.Content)
+		for _, line := range strings.Split(content, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			if strings.HasPrefix(line, "#CHAIN_STEP") {
+				colonIdx := strings.Index(line, ":")
+				if colonIdx == -1 {
+					continue
+				}
+				stepLabel := strings.TrimPrefix(line[:colonIdx], "#CHAIN_STEP")
+				step, err := strconv.Atoi(strings.TrimSpace(stepLabel))
+				if err != nil || step <= 0 {
+					continue
+				}
+				steps[step] = strings.TrimSpace(line[colonIdx+1:])
+				continue
+			}
+
+			if strings.HasPrefix(line, "#CHAIN:") {
+				steps[1] = strings.TrimSpace(line[len("#CHAIN:"):])
+				continue
+			}
+
+			if strings.HasPrefix(line, "@chain") {
+				steps[1] = strings.TrimSpace(line[len("@chain"):])
+			}
+		}
+	}
+	return steps
+}
+
+func countCompletedToolRounds(messages []ChatMessage) int {
+	completed := 0
+	awaitingToolResult := false
+
+	for _, msg := range messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			awaitingToolResult = true
+			continue
+		}
+		if msg.Role == "tool" && awaitingToolResult {
+			completed++
+			awaitingToolResult = false
+		}
+	}
+
+	return completed
+}
+
+func selectChainStep(stepChains map[int]string, completedRounds int) (int, bool) {
+	if len(stepChains) == 0 {
+		return 0, false
+	}
+
+	target := completedRounds + 1
+	if _, ok := stepChains[target]; ok {
+		return target, false
+	}
+
+	definedSteps := make([]int, 0, len(stepChains))
+	for step := range stepChains {
+		definedSteps = append(definedSteps, step)
+	}
+	sort.Ints(definedSteps)
+	return definedSteps[len(definedSteps)-1], true
+}
+
+func (h *Handler) normalizeChainToolCalls(chain *ParsedChain, tools []ChatFunctionTool, execOpts *RequestExecutionOptions) bool {
+	definedTools := collectDefinedTools(tools)
+	mismatch := false
+	callIndex := 1
+
+	for segIdx := range chain.Segments {
+		for nodeIdx := range chain.Segments[segIdx] {
+			node := &chain.Segments[segIdx][nodeIdx]
+			if node.Type != NodeTypeToolCalls {
+				continue
+			}
+			for toolIdx := range node.ToolCalls {
+				toolCall := &node.ToolCalls[toolIdx]
+				if toolCall.ID == "" {
+					toolCall.ID = execOpts.NextToolCallID(callIndex)
+				}
+				callIndex++
+
+				if definedTools == nil {
+					continue
+				}
+				if _, ok := definedTools[toolCall.Name]; !ok {
+					mismatch = true
+				}
+			}
+		}
+	}
+
+	return mismatch
+}
+
+func (h *Handler) writeChainTraceHeaders(c *gin.Context, execOpts *RequestExecutionOptions, trace ChainSelectionTrace) {
+	if !execOpts.ChainTrace {
+		return
+	}
+
+	c.Header("X-Mock-Chain-Step", strconv.Itoa(trace.SelectedStep))
+	c.Header("X-Mock-Chain-Fallback", strconv.FormatBool(trace.FallbackUsed))
+	c.Header("X-Mock-Tool-Mismatch", strconv.FormatBool(trace.ToolMismatch))
 }
 
 // ListFaultPresets lists available fault presets
